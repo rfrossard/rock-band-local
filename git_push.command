@@ -18,32 +18,43 @@ echo "✓ Arquivos adicionados"
 if git diff --cached --quiet; then
     echo "  (nada novo para commitar — tudo já está no histórico)"
 else
-    git commit -m "fix: corrigir regressão + Download Music sem DLL patch + preview de áudio
+    git commit -m "feat: v2.0.0 — FrossDownloadMenu Unity C# in-game Rhythmverse search
 
-REGRESSÃO CORRIGIDA:
-- restore_yarg.command: restaura Assembly-CSharp.dll do backup, valida
-  lang JSONs e corrige a chave Credits.Repos.YARG se corrompida
+YARG IS NOW THE PRIMARY GAME:
+- Python Rock Band Local archived to backup/python_rb_local/
+- YARG (Fross Garage Band) is the sole game
+- All new features built in Unity C#
 
-DOWNLOAD MUSIC (YARG) — nova abordagem, zero risco ao DLL:
-- patch_download_music.command: substitui Credits.json com catálogo de
-  30 coleções Rhythmverse (artistas, gêneros, busca livre)
-  SpecialRole='ProjectManager' → aparece na 1ª seção da tela
-  lang JSONs: header ProjectManager → '📥 Download Music' / 'Baixar Músicas'
-  Cada entrada tem botão 'Website' que abre Rhythmverse pré-filtrado
-  ZERO modificação em Assembly-CSharp.dll — completamente seguro
+NEW: FrossDownloadMenu.cs (~550 lines)
+- Full Unity C# MonoBehaviour — no Unity Editor required
+- Programmatic Canvas overlay (sortingOrder=200) on top of YARG UI
+- Search bar + format filter buttons (All/CH/YARG/RB3/PS/WTDE)
+- Scrollable song list with difficulty chips per instrument
+- Detail panel: title, artist, album, diffs, download count
+- Download button with real-time progress bar
+- UnityWebRequest coroutines → Rhythmverse POST API
+- ZIP extraction → ~/Library/Application Support/YARG/songs/
+- Back button — overlay destroyed, YARG resumes normally
 
-PREVIEW DE ÁUDIO (Rock Band Local Python):
-- ui/song_select.py: ao navegar na lista de músicas, toca automaticamente
-  preview.ogg, song.ogg, guitar.ogg etc. (em ordem de preferência)
-  Duração máxima de 12 segundos, fadeout ao trocar de música
-  Barra de progresso do preview na parte inferior da tela
-  Para automaticamente ao iniciar o jogo ou voltar ao menu
+NEW: patch_fgb.command
+- Compiles FrossDownloadMenu.cs → FrossDownloadMenu.dll (net472)
+- References YARG's own UnityEngine / UI DLLs at compile time
+- Copies DLL to YARG Managed/ folder
+- Mono.Cecil inline patcher: MainMenu.Credits() → FrossDownloadMenu.Show()
+- Re-signs Assembly-CSharp.dll with codesign
+- Backup before patch → restore_yarg.command still works
 
-ARQUITETURA DOWNLOAD MUSIC:
-- YARG (Fross Garage Band): tela Credits → catálogo Rhythmverse (links)
-- Rock Band Local (Python): '📥 Download Music' → RhythmverseScreen
-  com busca completa, filtros de formato, progresso de download
-  e instalação automática na pasta songs/"
+NEW: IMPLEMENTATION_PLAN.md
+- Session continuity document: what's done, what's next
+- Phase-by-phase status (Phases 1-5)
+- API reference, architecture diagram, session notes
+- Token budget strategy for future Claude sessions
+
+UPDATED: README.md → v2.0.0
+- Unity-first architecture description
+- Quick start with patch_fgb.command
+- Scripts reference table
+- Changelog"
 
     echo "✓ Commit criado"
 fi

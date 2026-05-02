@@ -1,11 +1,24 @@
-# 🎸 Rock Band Local
+# 🎸 Fross Garage Band
 
-> Local Rock Band game for macOS — combining the best of **YARG**, **Clone Hero**, **Frets on Fire** and **Guitar Hero World Tour Definitive Edition**.
+> **YARG rebranded and extended** — a local rock band game for macOS with an
+> integrated Rhythmverse song browser built natively in Unity C#.
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
-![Pygame](https://img.shields.io/badge/Pygame-2.5%2B-green)
+![Unity](https://img.shields.io/badge/Unity-2022-blue?logo=unity)
 ![Platform](https://img.shields.io/badge/Platform-macOS-lightgrey?logo=apple)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
+![Version](https://img.shields.io/badge/Version-2.0.0-brightgreen)
+
+---
+
+## What Is This?
+
+**Fross Garage Band** takes [YARG](https://github.com/YARC-Official/YARG)
+(Yet Another Rhythm Game — open source, Unity-based) and extends it with a
+native in-game **Rhythmverse song downloader**, so you can find, preview, and
+install songs without ever leaving the game.
+
+The original YARG experience (gameplay, library, scoring, multiplayer) is
+100% intact. The only addition is a new "Download Music" screen.
 
 ---
 
@@ -13,225 +26,170 @@
 
 | Feature | Details |
 |---|---|
-| 🎸 Guitar / Bass | 5 frets, strum, sustains, HOPOs |
-| 🥁 Drums | 5 pads (kick + 4 pads), cymbal support |
-| 🎤 Vocals | Real-time pitch detection via USB mic |
-| ⭐ Star Power | Overdrive with 2× multiplier (tilt/button) |
-| 👥 Multiplayer | Up to 4 simultaneous players |
-| 🌐 Rhythmverse | Browse & download songs in-game |
-| 🎛️ Calibration | Interactive latency offset calibration |
-| 📊 Results | SSS→F grades, 0–6 stars, full combo, accuracy |
+| 🎸 Full YARG gameplay | Guitar, Bass, Drums, Vocals, Keys — all difficulties |
+| 👥 Multiplayer | Local up to 4 players |
+| 🎮 Controllers | PS5 Rock Band guitar & drums, keyboard, any HID |
+| 📥 Download Music | In-game Rhythmverse search — find & install songs without leaving YARG |
+| 🔍 Search & filter | By title, artist, or format (CH / YARG / RB3 / PS / WTDE) |
+| ⬇️ Auto-install | ZIP downloaded and extracted to YARG songs folder automatically |
+| 🎨 Native Unity UI | Overlay matches YARG's dark color palette, no external app |
 
 ---
 
-## 🎮 Supported Controllers
+## 🚀 Quick Start
 
-| Device | Connection | Status |
-|---|---|---|
-| Guitar Rock Band PS5 (PDP Riffmaster) | Bluetooth | ✅ Auto-detected |
-| Drums Rock Band PS5 | USB | ✅ Auto-detected |
-| USB Microphone | USB | ✅ Auto-detected |
-| Keyboard | — | ✅ Always available |
+### 1. Install YARG
 
-### Keyboard Controls
+Download the latest YARG installer from
+[YARC Launcher](https://github.com/YARC-Official/YARC-Launcher/releases)
+or use the `YARC.Launcher_universal.app.tar.gz` included in this repo.
 
-**Guitar (Player 1)**
-```
-Frets:      S  D  F  J  K   (green, red, yellow, blue, orange)
-Strum:      ↑  ↓
-Star Power: SPACE
-```
+### 2. Clone this repo
 
-**Drums (Player 1)**
-```
-Pads: V (kick)  F (red)  G (yellow)  H (blue)  J (green)
-```
-
----
-
-## 🚀 Installation
-
-### macOS / Linux (recommended)
 ```bash
 git clone https://github.com/rfrossard/rock-band-local.git
 cd rock-band-local
-chmod +x install.sh
-./install.sh
-source .venv/bin/activate
-python main.py
 ```
 
-### Manual install
+### 3. Install the Download Music patch
+
+Requirement (one-time):
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python main.py
+brew install dotnet
 ```
 
-> **Note:** `sounddevice` and `aubio` are optional — only needed for vocal pitch detection.
+Double-click **`patch_fgb.command`** in Finder, or run:
+```bash
+bash patch_fgb.command
+```
+
+This compiles the Unity C# extension and hooks it into YARG's main menu.
+
+### 4. Play
+
+Double-click **`Launch YARG.command`** — or open YARG from `/Applications`.
+
+In the main menu, click **Download Music** to open the Rhythmverse browser.
 
 ---
 
-## 🎵 Adding Songs
+## 📥 Using Download Music
 
-### Local songs
-Drop any folder containing a `notes.chart` (or `notes.mid`) into `songs/`. The game auto-discovers on startup.
-
-```
-songs/
-└── Song Name - Artist/
-    ├── notes.chart        ← required
-    ├── song.ogg           ← main audio / backing track
-    ├── guitar.ogg         ← guitar stem (optional)
-    ├── bass.ogg           ← bass stem (optional)
-    ├── drums.ogg          ← drums stem (optional)
-    └── vocals.ogg         ← vocals stem (optional)
-```
-
-**Recommended chart sources:**
-- [Chorus.fightthe.pw](https://chorus.fightthe.pw) — historic archive
-- [Rhythmverse.co](https://rhythmverse.co) — directly from the in-game menu
-
-### Via Rhythmverse (in-game)
-Main Menu → **🌐 Browse Rhythmverse** → search → ⬇️ Download
+1. Open Fross Garage Band
+2. Click **Download Music** in the main menu
+3. Search by artist or song title
+4. Filter by format: `All / CH / YARG / RB3 / PS / WTDE`
+5. Select a song — details appear on the right
+6. Click **⬇ Baixar Música** — progress bar shows download status
+7. Song is automatically extracted to `~/Library/Application Support/YARG/songs/`
+8. Return to the song library — new song appears immediately
 
 ---
 
-## ⚙️ Configuration
+## 🔧 Scripts Reference
 
-Edit `config.json` or use the **⚙️ Settings** menu in-game:
+| Script | Purpose |
+|---|---|
+| `patch_fgb.command` | Compile + inject FrossDownloadMenu into YARG (**run once**) |
+| `restore_yarg.command` | Revert all patches — restore original YARG state |
+| `rebrand_yarg.command` | Apply "Fross Garage Band" name to YARG's UI strings |
+| `patch_download_music.command` | Lightweight fallback: Credits.json catalog (no DLL patch) |
+| `Launch YARG.command` | Open the game |
 
-```json
-{
-  "audio": {
-    "latency_offset_ms": 0,
-    "master_volume": 0.8
-  },
-  "video": {
-    "fullscreen": false,
-    "note_speed": 5
-  },
-  "players": [
-    { "instrument": "guitar", "difficulty": "medium" },
-    { "instrument": "drums",  "difficulty": "medium" }
-  ]
-}
+---
+
+## 🏗️ Architecture
+
+```
+FrossDownloadMenu.cs      ← Unity C# source (edit this to change the search UI)
+patch_fgb.command         ← Compiles .cs → .dll, Cecil-patches MainMenu.Credits()
+restore_yarg.command      ← Rollback: restores Assembly-CSharp.dll from backup
+
+/Applications/YARG.app/Contents/Resources/Data/
+  Managed/
+    Assembly-CSharp.dll     ← Patched: Credits() → FrossDownloadMenu.Show()
+    FrossDownloadMenu.dll   ← NEW: the in-game search overlay
+  StreamingAssets/
+    lang/*.json             ← "ProjectManager" header = "📥 Download Music"
+```
+
+The patch is additive — `FrossDownloadMenu.dll` is a new assembly, and only
+one call site in `Assembly-CSharp.dll` is modified. Everything else in YARG
+remains untouched.
+
+---
+
+## ↩️ Reverting
+
+To restore YARG to its original unpatched state:
+
+```bash
+bash restore_yarg.command
 ```
 
 ---
 
-## 🗺️ Project Structure
+## 📁 Folder Structure
 
 ```
 rock-band-local/
-├── main.py                      ← entry point
-├── config.json                  ← game settings
-├── requirements.txt
-├── install.sh / run.sh
-│
-├── game/
-│   ├── constants.py             ← colors, states, enums
-│   ├── chart_parser.py          ← .chart and .mid parser
-│   ├── audio_engine.py          ← stem playback + sync
-│   ├── input_handler.py         ← keyboard + joystick + mic
-│   ├── note_engine.py           ← highway, hit detection
-│   └── scoring.py               ← score, multiplier, Star Power
-│
-├── ui/
-│   ├── base_screen.py
-│   ├── main_menu.py
-│   ├── song_select.py
-│   ├── gameplay_screen.py       ← 3D note highway (YARG-style)
-│   ├── results_screen.py
-│   ├── calibration_screen.py
-│   ├── rhythmverse_screen.py    ← Rhythmverse browser
-│   └── settings_screen.py
-│
-├── network/
-│   └── rhythmverse_client.py    ← HTTP client + download
-│
-├── logos/                       ← custom YARG branding
-│   ├── inject_logo.py           ← injects PNGs into YARG assets
-│   ├── Run Injector.command     ← double-click launcher (macOS)
-│   ├── Logo_White.png           ← 1024×512
-│   ├── Splash_Logo.png          ← 1920×1080
-│   ├── Header.png               ← 1920×300
-│   ├── PauseBackground.png      ← 1920×1080
-│   └── YARG_Colorless.png       ← 512×512
-│
-└── design/                      ← UI design systems
-    ├── fross-design-system.html ← YARG-inspired web UI reference
-    └── minecraft-design-system.html
+├── FrossDownloadMenu.cs          # Unity C# — Rhythmverse search screen
+├── patch_fgb.command             # Compile + patch (main install script)
+├── restore_yarg.command          # Rollback
+├── rebrand_yarg.command          # Rename YARG → Fross Garage Band
+├── patch_download_music.command  # Lightweight Credits.json fallback
+├── Launch YARG.command           # Open the game
+├── logos/                        # Logo assets + inject script
+├── songs/                        # Local song library (auto-added to YARG)
+├── IMPLEMENTATION_PLAN.md        # Development roadmap & session notes
+└── backup/
+    └── python_rb_local/          # Archived Python/Pygame prototype
 ```
 
 ---
 
-## 🎨 Custom Branding (YARG Logo Injector)
+## 🧑‍💻 Development
 
-The `logos/` folder contains the **Fross Garage Band** branding and a script to inject custom logos into YARG's Unity assets.
+To modify the in-game search screen, edit **`FrossDownloadMenu.cs`** and
+re-run `patch_fgb.command`. The script always recompiles from source.
 
-```bash
-# Requires .venv with UnityPy + Pillow (already set up by install.sh)
-python3 logos/inject_logo.py
-
-# Or double-click "Run Injector.command" in Finder
-```
-
-> Replace any PNG in `logos/` keeping the exact pixel dimensions, then re-run. YARG must be closed.
+The C# file is self-contained — no Unity Editor needed. It references YARG's
+own DLLs from `Managed/` at compile time.
 
 ---
 
-## 🏆 Scoring System
+## 📋 Roadmap
 
-| Accuracy | Window | Points |
-|---|---|---|
-| Perfect | ±20 ms | 50 × multiplier |
-| Good | ±45 ms | 50 × multiplier |
-| OK | ±70 ms | 50 × multiplier |
-| Miss | > 70 ms | 0 |
+See **[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)** for the full
+phase-by-phase plan, session notes, and next steps.
 
-**Multiplier:** increases by 1× every 10 consecutive notes (max ×4). Star Power doubles it.
-
-**Grades:** SSS (100%) › SS (≥95%) › S (≥90%) › A (≥80%) › B (≥70%) › C › D › F
+**Current phase**: Phase 4 — Test & iterate  
+**Next**: Run `patch_fgb.command`, test in-game, fix any runtime issues
 
 ---
 
-## ⌨️ Global Shortcuts
+## 🙏 Credits
 
-| Key | Action |
-|---|---|
-| `F11` | Toggle fullscreen |
-| `P` | Pause / resume |
-| `ESC` | Back / quit |
+- [YARG](https://github.com/YARC-Official/YARG) — the open-source rhythm game this builds on
+- [Rhythmverse](https://rhythmverse.co) — song file database and download platform
+- [Mono.Cecil](https://github.com/jbevain/cecil) — .NET assembly manipulation
 
 ---
 
-## 📦 Dependencies
+## Changelog
 
-| Package | Purpose |
-|---|---|
-| `pygame` | Game engine, rendering, input |
-| `requests` + `beautifulsoup4` | Rhythmverse integration |
-| `Pillow` | Logo generation & injection |
-| `numpy` | Audio processing |
-| `sounddevice` *(optional)* | USB microphone input |
-| `aubio` *(optional)* | Real-time pitch detection (vocals) |
-| `UnityPy` *(logos only)* | YARG asset injection |
+### v2.0.0 — 2026-05-02
+- **New**: `FrossDownloadMenu.cs` — full in-game Rhythmverse search overlay (Unity C#)
+- **New**: `patch_fgb.command` — one-click compile + Cecil patch workflow
+- **New**: `IMPLEMENTATION_PLAN.md` — session continuity document
+- **Changed**: YARG is now the primary game; Python implementation archived to `backup/`
+- **Changed**: README rewritten to reflect Unity-first architecture
 
----
+### v1.5.0 — 2026-04-28
+- `restore_yarg.command` with DLL backup + lang JSON validation
+- `patch_download_music.command` — Credits.json catalog (no DLL)
+- Audio preview in Python SongSelectScreen
 
-## 🤝 Contributing
-
-1. Fork the repo
-2. Create a branch: `git checkout -b feature/my-feature`
-3. Commit: `git commit -m 'Add some feature'`
-4. Push: `git push origin feature/my-feature`
-5. Open a Pull Request
-
----
-
-## 📄 License
-
-MIT — see [LICENSE](LICENSE) for details.
-
-> **Disclaimer:** This project is a fan-made tool. YARG, Clone Hero, Rock Band, and Guitar Hero are trademarks of their respective owners. Song charts require proper licensing — this repo does not include any copyrighted music.
+### v1.0.0 — 2026-04-20
+- Initial release: full Python/Pygame rhythm game + Rhythmverse integration
+- YARG rebranding (Fross Garage Band), logo injection

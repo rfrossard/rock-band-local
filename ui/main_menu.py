@@ -22,7 +22,7 @@ from ui.base_screen import BaseScreen, Button, draw_text, draw_rounded_rect, Fon
 
 MENU_ITEMS = [
     ("🎸  Tocar",                    STATE_SONG_SELECT,  0),
-    ("🌐  Rhythmverse",              STATE_RHYTHMVERSE,  1),
+    ("📥  Download Music",           STATE_RHYTHMVERSE,  1),
     ("🎛️   Calibrar Latência",       STATE_CALIBRATION,  2),
     ("⚙️   Configurações",           STATE_SETTINGS,     3),
     ("🚪  Sair",                     STATE_QUIT,         4),

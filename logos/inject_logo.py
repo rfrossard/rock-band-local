@@ -117,6 +117,53 @@ def inject(assets_path, replacements_for_file):
         f.write(raw)
     print(f"  → wrote {len(raw):,} bytes to {os.path.basename(assets_path)}")
 
+# ── Localization patcher ───────────────────────────────────────────────────────
+
+LANG_DIR = os.path.join("/Applications/YARG.app/Contents/Resources/Data/StreamingAssets/lang")
+
+MOTD_EN = (
+    '<align=center><size=32><b>Welcome to Fross Garage Band!</b></size></align>'
+    '\\n\\nv0.14 brings 5 Lane Keys, a new MIDI Drums profile type, easier instrument setup, '
+    '3D venue events, performance improvements, many visual improvements, and more.'
+    '\\n\\n<b>Download new songs via the Rock Band Local app — Rhythmverse integration included.</b>'
+    '\\n\\nRock on!'
+)
+MOTD_PT = (
+    '<align=center><size=32><b>Bem-vindo ao Fross Garage Band!</b></size></align>'
+    '\\n\\nv0.14 traz 5 Teclas Lane, novo perfil de MIDI Drums, configuração de instrumentos '
+    'mais fácil, eventos de palco 3D, melhorias de performance e muito mais.'
+    '\\n\\n<b>Baixe novas músicas pelo app Rock Band Local — integração Rhythmverse inclusa.</b>'
+    '\\n\\nBora tocar!'
+)
+
+def _patch_lang():
+    import re
+    if not os.path.isdir(LANG_DIR):
+        print("  ⚠  Lang dir not found, skipping")
+        return
+    for fname in os.listdir(LANG_DIR):
+        if not fname.endswith('.json'):
+            continue
+        path = os.path.join(LANG_DIR, fname)
+        with open(path, encoding='utf-8-sig') as f:
+            content = f.read()
+        orig = content
+        motd = MOTD_PT if fname.startswith('pt-') else MOTD_EN
+        content = re.sub(
+            r'"MessageOfTheDay"\s*:\s*"(?:[^"\\]|\\.)*"',
+            f'"MessageOfTheDay": "{motd}"',
+            content
+        )
+        content = re.sub(
+            r'("Credits"\s*:\s*")[^"]{2,40}(")',
+            r'\1Download Music\2',
+            content
+        )
+        if content != orig:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            print(f"  ✓  lang/{fname}")
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 print("=" * 58)
@@ -144,4 +191,7 @@ for assets_path, rep in by_file.items():
     backup(assets_path)
     inject(assets_path, rep)
 
-print("\nDone! Launch YARG to see the new logo.")
+print("\nInjecting localization patches...")
+_patch_lang()
+
+print("\nDone! Launch YARG to see the new logo and branding.")

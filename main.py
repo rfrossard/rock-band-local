@@ -50,6 +50,13 @@ from ui.base_screen      import draw_text
 
 CONFIG_PATH = "config.json"
 
+# Pasta raiz do projeto (onde este main.py está)
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Pasta de músicas — dentro do projeto, automaticamente no SongFolders do YARG
+SONGS_DIR   = os.path.join(PROJECT_DIR, "songs")
+# Pasta do YARG
+YARG_APP    = "/Applications/YARG.app"
+
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -80,11 +87,20 @@ def load_config() -> Dict:
             "hit_window_good_ms": 45,
             "hit_window_ok_ms": 70,
         },
-        "songs_path": "songs",
+        # Downloads vão para songs/ dentro do projeto.
+        # O YARG já tem este diretório como SongFolder — músicas aparecem
+        # automaticamente na biblioteca do YARG sem configuração extra.
+        "songs_path": SONGS_DIR,
         "rhythmverse": {
             "base_url": "https://rhythmverse.co",
-            "download_path": "songs",
-            "cache_ttl_seconds": 300,
+            "download_path": SONGS_DIR,
+            "cache_ttl_seconds": 120,
+            "records_per_page": 25,
+            # Formatos preferidos para download (têm link direto no Rhythmverse)
+            "preferred_gameformats": ["chm", "yarg", "all"],
+        },
+        "yarg": {
+            "app_path": YARG_APP,
         },
         "players": [
             {"instrument": "guitar", "difficulty": "medium"},
@@ -95,14 +111,13 @@ def load_config() -> Dict:
         try:
             with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
                 stored = json.load(f)
-            # Merge profundo
             _deep_merge(defaults, stored)
         except Exception as e:
             print(f"[Config] Erro ao ler config.json: {e}. Usando defaults.")
 
-    # Garantir pasta de músicas
-    songs_dir = defaults.get("songs_path", "songs")
-    os.makedirs(songs_dir, exist_ok=True)
+    # Garantir pastas
+    os.makedirs(defaults["songs_path"], exist_ok=True)
+    os.makedirs(defaults["rhythmverse"]["download_path"], exist_ok=True)
 
     return defaults
 

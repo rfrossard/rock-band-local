@@ -1,6 +1,5 @@
 #!/bin/bash
 # Fross Garage Band — Git commit & push
-set -e
 cd "$(dirname "$0")"
 
 echo ""
@@ -15,28 +14,39 @@ rm -f .git/index.lock 2>/dev/null && echo "✓ Lock removido" || true
 git add -A
 echo "✓ Arquivos adicionados"
 
-# Commit
-git commit -m "feat: Fross Garage Band rebranding + native Download Music plugin
+# Verifica se há algo para commitar
+if git diff --cached --quiet; then
+    echo "  (nada novo para commitar — tudo já está no histórico)"
+else
+    git commit -m "fix: corrigir regressão + Download Music sem DLL patch + preview de áudio
 
-YARG → Fross Garage Band:
-- rebrand_yarg.command: patches Info.plist, all 9 lang JSONs, cria
-  /Applications/Fross Garage Band.app launcher
-- CFBundleName = 'Fross Garage Band', version 0.14-FGB
-- All lang JSONs: YARG → Fross Garage Band, Credits → Download Music
+REGRESSÃO CORRIGIDA:
+- restore_yarg.command: restaura Assembly-CSharp.dll do backup, valida
+  lang JSONs e corrige a chave Credits.Repos.YARG se corrompida
 
-Native BepInEx Plugin (Download Music):
-- compile_plugin.command: auto-compila FrossDownloadMusic.dll via dotnet
-- Full Unity UI Canvas overlay (sem app externo)
-- Rhythmverse API: busca, filtro por formato (chm/yarg/rb3/ps/wtde)
-- Download + auto-unzip direto para pasta de músicas do YARG
-- Harmony-patched no botão Credits do YARG (via reflection)
+DOWNLOAD MUSIC (YARG) — nova abordagem, zero risco ao DLL:
+- patch_download_music.command: substitui Credits.json com catálogo de
+  30 coleções Rhythmverse (artistas, gêneros, busca livre)
+  SpecialRole='ProjectManager' → aparece na 1ª seção da tela
+  lang JSONs: header ProjectManager → '📥 Download Music' / 'Baixar Músicas'
+  Cada entrada tem botão 'Website' que abre Rhythmverse pré-filtrado
+  ZERO modificação em Assembly-CSharp.dll — completamente seguro
 
-Rock Band Local pygame UI:
-- ui/main_menu.py: 'Rhythmverse' → 'Download Music'
-- ui/rhythmverse_screen.py: título atualizado + retry em caso de erro
-- network/rhythmverse_client.py: integração real com API Rhythmverse JSON
-- Launch YARG.command: launcher para YARG via BepInEx"
-echo "✓ Commit criado"
+PREVIEW DE ÁUDIO (Rock Band Local Python):
+- ui/song_select.py: ao navegar na lista de músicas, toca automaticamente
+  preview.ogg, song.ogg, guitar.ogg etc. (em ordem de preferência)
+  Duração máxima de 12 segundos, fadeout ao trocar de música
+  Barra de progresso do preview na parte inferior da tela
+  Para automaticamente ao iniciar o jogo ou voltar ao menu
+
+ARQUITETURA DOWNLOAD MUSIC:
+- YARG (Fross Garage Band): tela Credits → catálogo Rhythmverse (links)
+- Rock Band Local (Python): '📥 Download Music' → RhythmverseScreen
+  com busca completa, filtros de formato, progresso de download
+  e instalação automática na pasta songs/"
+
+    echo "✓ Commit criado"
+fi
 
 # Push
 echo ""

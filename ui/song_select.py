@@ -4,6 +4,7 @@ Rock Band Local — Song Select Screen
 from __future__ import annotations
 import os
 import time
+import threading
 from typing import Dict, List, Optional, Tuple
 
 import pygame
@@ -37,16 +38,35 @@ DIFF_COLORS = {
 
 class SongSelectScreen(BaseScreen):
 
+    # Arquivos de áudio buscados como preview (em ordem de preferência)
+    _PREVIEW_FILES = [
+        "preview.ogg", "preview.mp3",
+        "song.ogg",    "song.mp3",
+        "guitar.ogg",  "guitar.mp3",
+        "drums.ogg",   "drums.mp3",
+    ]
+    _PREVIEW_DURATION = 12.0   # segundos de preview
+
     def __init__(self, screen: pygame.Surface, config: Dict):
         super().__init__(screen, config)
         self._songs: List[Tuple[str, Chart]] = []
         self._selected_idx = 0
+        self._prev_selected = -1          # para detectar mudança de seleção
         self._scroll_offset = 0
         self._loading = True
         self._player_instruments = [INSTRUMENT_GUITAR]
         self._player_difficulties = [DIFF_MEDIUM]
         self._num_players = len(config.get('players', [{'instrument': INSTRUMENT_GUITAR}]))
         self._t = time.monotonic()
+
+        # Preview de áudio
+        self._preview_playing: Optional[str] = None   # pasta da música em preview
+        self._preview_timer = 0.0                     # segundos rodando
+        self._preview_status = ""                     # texto exibido na UI
+        self._preview_vol = float(
+            config.get('audio', {}).get('master_volume', 0.8)
+        )
+        self._preview_channel: Optional[pygame.mixer.Channel] = None
 
         # Painel direito — seleção de instrumento/dificuldade
         self._setting_player = 0   # qual jogador está configurando
@@ -74,12 +94,86 @@ class SongSelectScreen(BaseScreen):
         songs_path = self.config.get('songs_path', 'songs')
         self._songs = discover_songs(songs_path)
         self._loading = False
+        self._prev_selected = -1
         if self._songs:
             self._selected_idx = 0
+
+    def on_exit(self) -> None:
+        """Para preview ao sair da tela."""
+        self._stop_preview()
+
+    # ── Preview de áudio ───────────────────────────────────────
+
+    def _find_preview_file(self, folder: str) -> Optional[str]:
+        """Retorna o primeiro arquivo de áudio encontrado na pasta da música."""
+        for fname in self._PREVIEW_FILES:
+            path = os.path.join(folder, fname)
+            if os.path.exists(path):
+                return path
+        return None
+
+    def _start_preview(self, folder: str) -> None:
+        """Toca preview da música de forma não-bloqueante."""
+        self._stop_preview()
+        audio_file = self._find_preview_file(folder)
+        if not audio_file:
+            self._preview_status = "♪ sem preview"
+            return
+
+        def _load_and_play():
+            try:
+                if not pygame.mixer.get_init():
+                    return
+                sound = pygame.mixer.Sound(audio_file)
+                sound.set_volume(min(1.0, self._preview_vol * 0.7))
+                # Usar canal reservado para preview (canal 0)
+                ch = pygame.mixer.Channel(0)
+                ch.play(sound)
+                self._preview_channel = ch
+                self._preview_playing = folder
+                self._preview_timer   = 0.0
+                name = os.path.basename(audio_file)
+                self._preview_status = f"♪  {name}"
+            except Exception as e:
+                self._preview_status = f"♪ erro: {str(e)[:40]}"
+
+        threading.Thread(target=_load_and_play, daemon=True).start()
+
+    def _stop_preview(self) -> None:
+        """Para o canal de preview se estiver tocando."""
+        try:
+            if self._preview_channel and self._preview_channel.get_busy():
+                self._preview_channel.fadeout(300)
+        except Exception:
+            pass
+        self._preview_playing = None
+        self._preview_timer   = 0.0
+        self._preview_status  = ""
+        self._preview_channel = None
+
+    def _draw_preview_status(self) -> None:
+        """Exibe indicador de preview de áudio na barra inferior."""
+        if self._preview_status:
+            # Barra de progresso do preview
+            if self._preview_playing and self._preview_timer > 0:
+                pct = min(1.0, self._preview_timer / self._PREVIEW_DURATION)
+                bar_w = 180
+                bar_x = self.w // 2 - bar_w // 2
+                bar_y = self.h - 26
+                pygame.draw.rect(self.screen, (30, 30, 50),
+                                 (bar_x, bar_y, bar_w, 6), border_radius=3)
+                fill = int(bar_w * pct)
+                if fill > 0:
+                    pygame.draw.rect(self.screen, (60, 180, 100),
+                                     (bar_x, bar_y, fill, 6), border_radius=3)
+            draw_text(self.screen, self._preview_status,
+                      self.w // 2, self.h - 38,
+                      size=FONT_TINY_SIZE, color=(120, 200, 120), center_x=True)
 
     def handle_event(self, event: pygame.event.Event) -> None:
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
+                self._stop_preview()
                 self.transition_to(STATE_MAIN_MENU)
             elif event.key == pygame.K_DOWN:
                 self._selected_idx = (self._selected_idx + 1) % max(1, len(self._songs))
@@ -98,8 +192,10 @@ class SongSelectScreen(BaseScreen):
 
         if event.type == pygame.MOUSEBUTTONDOWN:
             if self._btn_play.is_clicked(event) and self._songs:
+                self._stop_preview()
                 self._launch_game()
             elif self._btn_back.is_clicked(event):
+                self._stop_preview()
                 self.transition_to(STATE_MAIN_MENU)
             else:
                 self._handle_list_click(event.pos)
@@ -132,6 +228,7 @@ class SongSelectScreen(BaseScreen):
     def _launch_game(self) -> None:
         if not self._songs:
             return
+        self._stop_preview()
         folder, chart = self._songs[self._selected_idx]
         players = []
         for i in range(self._num_players):
@@ -161,6 +258,25 @@ class SongSelectScreen(BaseScreen):
             self._player_instruments.append(INSTRUMENT_GUITAR)
             self._player_difficulties.append(DIFF_MEDIUM)
 
+        # Preview de áudio: disparar quando seleção muda
+        if self._songs and self._selected_idx != self._prev_selected:
+            self._prev_selected = self._selected_idx
+            folder, _ = self._songs[self._selected_idx]
+            self._start_preview(folder)
+
+        # Parar preview após N segundos
+        if self._preview_playing:
+            self._preview_timer += dt
+            if self._preview_timer >= self._PREVIEW_DURATION:
+                self._stop_preview()
+
+            # Verificar se o canal terminou naturalmente (arquivo curto)
+            try:
+                if self._preview_channel and not self._preview_channel.get_busy():
+                    self._stop_preview()
+            except Exception:
+                pass
+
     def draw(self) -> None:
         self.screen.fill(COLOR_BG)
         self.draw_background_grid()
@@ -178,6 +294,7 @@ class SongSelectScreen(BaseScreen):
         self._btn_play.draw(self.screen)
         self._btn_back.draw(self.screen)
         self._draw_player_settings()
+        self._draw_preview_status()
 
     def _draw_empty_state(self) -> None:
         songs_path = self.config.get('songs_path', 'songs')

@@ -223,7 +223,7 @@ if [ ! -f "$BEPINEX_SH" ]; then
 fi
 chmod +x "$BEPINEX_SH"
 cd "$YARG"
-exec "$BEPINEX_SH"
+exec "$BEPINEX_SH" "$YARG"
 LAUNCHER
 chmod +x "$FGB_APP/Contents/MacOS/FrossGarageBand"
 

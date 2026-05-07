@@ -111,6 +111,14 @@ class SongConverter:
 
     AUDIO_EXTS  = {".ogg", ".opus"}
     CHART_NAMES = {"notes.mid", "notes.chart", "song.chart"}
+    # CH/YARG stem names (besides song.ogg)
+    STEM_NAMES  = {
+        "guitar.ogg", "rhythm.ogg", "bass.ogg", "drums.ogg",
+        "drums_1.ogg", "drums_2.ogg", "drums_3.ogg", "drums_4.ogg",
+        "vocals.ogg", "vocal.ogg", "keys.ogg", "crowd.ogg",
+        "guitar.opus", "rhythm.opus", "bass.opus", "drums.opus",
+        "vocals.opus", "keys.opus",
+    }
 
     def __init__(self) -> None:
         self.songs_dir = SONGS_DIR
@@ -149,12 +157,18 @@ class SongConverter:
 
         files = {f.name.lower(): f for f in folder.iterdir() if f.is_file()}
 
-        # Áudio
-        ogg = folder / "song.ogg"
+        # Áudio — aceita song.ogg, stems CH (guitar.ogg, etc.) ou song.mogg
+        ogg  = folder / "song.ogg"
         mogg = folder / "song.mogg"
-        if ogg.exists():
+        stem = next(
+            (folder / n for n in self.STEM_NAMES if (folder / n).exists()),
+            None,
+        )
+        audio_file = ogg if ogg.exists() else (stem if stem else None)
+
+        if audio_file:
             r.has_audio = True
-            info = self._ffprobe(ogg)
+            info = self._ffprobe(audio_file)
             r.audio_info = info
             if info:
                 ok = info["sample_rate"] == 44100 and info["channels"] <= 2
@@ -170,7 +184,7 @@ class SongConverter:
             r.has_audio = True
             r.issues.append("Áudio em MOGG — precisa unwrap com Onyx")
         else:
-            r.issues.append("Sem arquivo de áudio (song.ogg)")
+            r.issues.append("Sem arquivo de áudio (song.ogg ou stems CH)")
 
         # Chart
         chart_found = any(n in files for n in self.CHART_NAMES)
@@ -388,7 +402,11 @@ class SongConverter:
 
         # Encontrar raiz do conteúdo dentro do src
         content_root = self._find_content_root(src)
-        log(f"📂  Conteúdo: {content_root.relative_to(PROJECT_DIR)}")
+        try:
+            display = content_root.relative_to(PROJECT_DIR)
+        except ValueError:
+            display = content_root.name
+        log(f"📂  Conteúdo: {display}")
 
         for item in content_root.iterdir():
             dst = final / item.name
@@ -408,7 +426,10 @@ class SongConverter:
         return base
 
     def _fix_audio_inplace(self, folder: Path, log: Callable) -> Optional[Path]:
-        """Verifica e corrige o áudio (44 100 Hz stereo) se necessário."""
+        """
+        Verifica e corrige todos os arquivos de áudio OGG/OPUS em folder.
+        Suporta song.ogg, stems CH (guitar.ogg, drums.ogg, etc.) e song.mogg.
+        """
         ogg  = folder / "song.ogg"
         mogg = folder / "song.mogg"
 
@@ -421,46 +442,69 @@ class SongConverter:
                 capture_output=True, text=True, timeout=90,
             )
             if r.returncode == 0 and raw.exists():
-                ogg = raw
+                # Reencode o raw imediatamente para song.ogg correto
+                ogg = folder / "song.ogg"
+                r2 = subprocess.run(
+                    ["ffmpeg", "-y", "-i", str(raw),
+                     "-ar", "44100", "-ac", "2", str(ogg)],
+                    capture_output=True, text=True, timeout=300,
+                )
+                raw.unlink(missing_ok=True)
+                if r2.returncode != 0:
+                    log("❌  ffmpeg falhou ao converter MOGG")
+                    return None
+                log("✅  MOGG convertido para song.ogg (44 100 Hz)")
+                return folder
             else:
                 log("❌  Onyx unwrap falhou no MOGG")
                 return None
 
-        if not ogg.exists():
-            log("⚠️   Sem song.ogg — música pode não tocar no YARG")
+        # Coletar todos os OGGs da pasta (song.ogg + stems)
+        all_oggs = [
+            f for f in folder.iterdir()
+            if f.is_file() and f.suffix in (".ogg", ".opus")
+            and "backup" not in f.name and "raw" not in f.name
+        ]
+
+        if not all_oggs:
+            log("⚠️   Sem arquivos de áudio — música pode não tocar no YARG")
             return folder
 
-        info = self._ffprobe(ogg)
-        if info and info["sample_rate"] == 44100 and info["channels"] <= 2:
-            log("✅  Áudio já compatível (44 100 Hz stereo)")
+        # Verificar se algum precisa reencode
+        needs_fix = []
+        already_ok = []
+        for af in all_oggs:
+            info = self._ffprobe(af)
+            if info and (info["sample_rate"] != 44100 or info["channels"] > 2):
+                needs_fix.append((af, info))
+            else:
+                already_ok.append(af)
+
+        if not needs_fix:
+            log(f"✅  Áudio já compatível ({len(all_oggs)} arquivo(s), 44 100 Hz)")
             return folder
 
-        sr = info["sample_rate"] if info else "?"
-        log(f"🎵  Corrigindo áudio ({sr} Hz → 44 100 Hz stereo)...")
+        sr_list = sorted({i["sample_rate"] for _, i in needs_fix})
+        log(f"🎵  Corrigindo {len(needs_fix)} arquivo(s) ({sr_list} Hz → 44 100 Hz)...")
 
-        bak = folder / "song_backup.ogg"
-        # Se o ogg é o mesmo arquivo de saída, faz backup
-        out_ogg = folder / "song.ogg"
-        if ogg != out_ogg:
-            shutil.copy2(ogg, bak)
-            ffmpeg_input = ogg
-        else:
-            shutil.copy2(ogg, bak)
-            ffmpeg_input = bak
+        for af, info in needs_fix:
+            bak = af.with_name(af.stem + "_backup" + af.suffix)
+            shutil.copy2(af, bak)
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-i", str(bak),
+                 "-ar", "44100", "-ac", "2", str(af)],
+                capture_output=True, text=True, timeout=300,
+            )
+            if r.returncode == 0:
+                log(f"  ✅  {af.name}")
+                bak.unlink(missing_ok=True)
+            else:
+                shutil.copy2(bak, af)   # rollback
+                log(f"  ❌  {af.name}: {r.stderr[-80:]}")
+                return None
 
-        r = subprocess.run(
-            ["ffmpeg", "-y", "-i", str(ffmpeg_input),
-             "-ar", "44100", "-ac", "2", str(out_ogg)],
-            capture_output=True, text=True, timeout=300,
-        )
-        if r.returncode == 0:
-            log("✅  Áudio corrigido!")
-            return folder
-        else:
-            # Rollback
-            shutil.copy2(bak, out_ogg)
-            log(f"❌  ffmpeg falhou: {r.stderr[-100:]}")
-            return None
+        log("✅  Todos os arquivos de áudio corrigidos!")
+        return folder
 
     # ── Utilitários ───────────────────────────────────────────────────────────
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Fross Song Manager
+Fross Song Manager  ·  Matrix Edition
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Busca músicas no Rhythmverse, baixa e converte para o
-Fross Garage Band — tudo em um clique.
+Busca músicas no Rhythmverse, baixa para staging, testa e
+aprova para o Fross Garage Band — tudo em um clique.
 
 Uso:  python3 song_manager.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -21,51 +21,52 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from typing import Callable, Counter, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 # ── Project paths ─────────────────────────────────────────────────────────────
-PROJECT_DIR = Path(__file__).parent.resolve()
+PROJECT_DIR  = Path(__file__).parent.resolve()
 sys.path.insert(0, str(PROJECT_DIR))
 
-SONGS_DIR = PROJECT_DIR / "songs"
-ONYX_CLI  = PROJECT_DIR / "onyx-cli"
+SONGS_DIR    = PROJECT_DIR / "songs"
+STAGING_DIR  = PROJECT_DIR / "songs_staging"
+ONYX_CLI     = PROJECT_DIR / "onyx-cli"
 SONGS_DIR.mkdir(exist_ok=True)
+STAGING_DIR.mkdir(exist_ok=True)
 
 # ── Network client ────────────────────────────────────────────────────────────
 from network.rhythmverse_client import RhythmverseClient, RVSong, SearchResult, GAMEFORMATS  # noqa
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
-# ── Palette ───────────────────────────────────────────────────────────────────
-BG      = "#14142A"
-CARD    = "#1C1C34"
-SEL     = "#26264A"
-ACCENT  = "#4A8ED0"
-SUCCESS = "#46C06C"
-WARN    = "#E09428"
-ERR     = "#E04848"
-TEXT    = "#DDDDF2"
-DIM     = "#72729A"
-BORDER  = "#2C2C52"
+# ── Matrix Palette ────────────────────────────────────────────────────────────
+BG      = "#000000"   # pure black
+CARD    = "#080808"   # card surface
+SEL     = "#001800"   # dark green selection
+ACCENT  = "#00FF41"   # Matrix signature green
+SUCCESS = "#00CC33"   # confirmed green
+WARN    = "#AAFF00"   # yellow-green caution
+ERR     = "#FF3333"   # red errors
+TEXT    = "#AAFFCC"   # pale green text
+DIM     = "#1E7A1E"   # muted green
+BORDER  = "#003300"   # dark green separator
+MF      = "Menlo"     # Matrix monospace font
 
 FMT_CLR: Dict[str, str] = {
-    "chm":     "#3CA04E",
-    "yarg":    "#4A8ED0",
-    "rb3":     "#C83C3C",
-    "rb3xbox": "#C83C3C",
-    "rb3wii":  "#C84C3C",
-    "rb3ps3":  "#C83C4C",
-    "tbrb":    "#9038C4",
-    "ps":      "#3CA0B4",
-    "wtde":    "#B04C18",
+    "chm":     "#00AA44",
+    "yarg":    "#00BB77",
+    "rb3":     "#CC3333",
+    "rb3xbox": "#CC3333",
+    "rb3wii":  "#CC4433",
+    "rb3ps3":  "#CC3344",
+    "tbrb":    "#8833CC",
+    "ps":      "#33AACC",
+    "wtde":    "#AA5511",
 }
 
-FGB         = "Fross Garage Band"   # nome do jogo
+FGB         = "Fross Garage Band"
 
-# Formatos compatíveis com FGB sem conversão (CH = Clone Hero também funciona)
 YARG_NATIVE = {"chm", "yarg", "ps", "ch"}
-# Formatos que precisam do Onyx
 NEEDS_ONYX  = {"rb3", "rb3xbox", "rb3wii", "rb3ps3", "tbrb"}
 
 
@@ -92,7 +93,6 @@ class CompatResult:
 
     @property
     def fixable(self) -> bool:
-        """Pode ser corrigido apenas com ffmpeg (áudio errado mas chart OK)."""
         return self.exists and self.has_audio and not self.audio_ok and self.has_chart
 
     def summary(self) -> str:
@@ -110,11 +110,10 @@ class CompatResult:
 
 
 class SongConverter:
-    """Gerencia detecção, conversão e verificação de músicas para o Fross Garage Band."""
+    """Gerencia detecção, conversão e verificação de músicas para o FGB."""
 
     AUDIO_EXTS  = {".ogg", ".opus"}
     CHART_NAMES = {"notes.mid", "notes.chart", "song.chart"}
-    # CH/FGB stem names (besides song.ogg)
     STEM_NAMES  = {
         "guitar.ogg", "rhythm.ogg", "bass.ogg", "drums.ogg",
         "drums_1.ogg", "drums_2.ogg", "drums_3.ogg", "drums_4.ogg",
@@ -124,29 +123,52 @@ class SongConverter:
     }
 
     def __init__(self) -> None:
-        self.songs_dir = SONGS_DIR
-        self.onyx_cli  = ONYX_CLI
+        self.songs_dir   = SONGS_DIR
+        self.staging_dir = STAGING_DIR
+        self.onyx_cli    = ONYX_CLI
 
     # ── Busca no disco ────────────────────────────────────────────────────────
 
     def find_existing(self, song: RVSong) -> Optional[Path]:
-        """Retorna a pasta se a música já existe em songs/ (matching aproximado)."""
+        """Retorna a pasta em songs/ se a música já existe."""
+        return self._find_in(song, self.songs_dir)
+
+    def find_staged(self, song: RVSong) -> Optional[Path]:
+        """Retorna a pasta em songs_staging/ se a música está em teste."""
+        return self._find_in(song, self.staging_dir)
+
+    def _find_in(self, song: RVSong, base: Path) -> Optional[Path]:
+        if not base.exists():
+            return None
         candidates = [
             f"{song.artist} - {song.title}",
             song.title,
             re.sub(r"[:/]", " ", f"{song.artist} - {song.title}"),
         ]
         for name in candidates:
-            p = self.songs_dir / self._safe(name)
+            p = base / self._safe(name)
             if p.is_dir():
                 return p
-
-        # Fuzzy: pasta que contenha o título
         t = song.title.lower()
-        for item in self.songs_dir.iterdir():
+        for item in base.iterdir():
             if item.is_dir() and t in item.name.lower():
                 return item
         return None
+
+    # ── Staging operations ────────────────────────────────────────────────────
+
+    def approve_song(self, staged_path: Path) -> Optional[Path]:
+        """Move song from staging to songs/ (make it official)."""
+        target = self.songs_dir / staged_path.name
+        if target.exists():
+            bak = target.parent / f"{target.name}__bak_{int(time.time())}"
+            shutil.move(str(target), str(bak))
+        shutil.move(str(staged_path), str(target))
+        return target
+
+    def reject_song(self, staged_path: Path) -> None:
+        """Delete song from staging."""
+        shutil.rmtree(staged_path, ignore_errors=True)
 
     # ── Verificação de compatibilidade ────────────────────────────────────────
 
@@ -160,7 +182,6 @@ class SongConverter:
 
         files = {f.name.lower(): f for f in folder.iterdir() if f.is_file()}
 
-        # Áudio — aceita song.ogg, stems CH (guitar.ogg, etc.) ou song.mogg
         ogg  = folder / "song.ogg"
         mogg = folder / "song.mogg"
         stem = next(
@@ -189,15 +210,12 @@ class SongConverter:
         else:
             r.issues.append("Sem arquivo de áudio (song.ogg ou stems CH)")
 
-        # Chart
         chart_found = any(n in files for n in self.CHART_NAMES)
         r.has_chart = chart_found
         if not chart_found:
             r.issues.append("Sem chart (notes.mid / notes.chart)")
 
-        # INI (opcional mas recomendado)
         r.has_ini = "song.ini" in files
-
         return r
 
     def _ffprobe(self, path: Path) -> Optional[dict]:
@@ -222,40 +240,42 @@ class SongConverter:
 
     def process_folder(
         self,
-        song:    RVSong,
-        folder:  Path,
-        log:     Callable[[str], None],
+        song:     RVSong,
+        folder:   Path,
+        log:      Callable[[str], None],
+        dest_dir: Optional[Path] = None,
     ) -> Optional[Path]:
         """
-        Recebe a pasta já baixada (extraída pelo RhythmverseClient),
-        detecta o formato e converte / corrige para o Fross Garage Band.
-        Retorna a pasta final em songs/ ou None em caso de falha.
+        Processa a pasta baixada.
+        dest_dir: onde salvar (default = songs_dir).
+        Retorna a pasta final ou None em caso de falha.
         """
+        target = dest_dir or self.songs_dir
         fmt = song.gameformat.lower()
 
         if fmt in NEEDS_ONYX:
             log(f"🔄  Formato {fmt.upper()} — convertendo com Onyx...")
-            return self._pipeline_rb3(song, folder, log)
+            return self._pipeline_rb3(song, folder, log, target)
         else:
             log(f"🎵  Formato {fmt.upper()} — ajustando para {FGB}...")
-            return self._pipeline_native(song, folder, log)
+            return self._pipeline_native(song, folder, log, target)
 
     # ── Pipeline RB3 (Onyx + ffmpeg) ─────────────────────────────────────────
 
     def _pipeline_rb3(
         self,
-        song:   RVSong,
-        src:    Path,
-        log:    Callable,
+        song:       RVSong,
+        src:        Path,
+        log:        Callable,
+        target_dir: Path,
     ) -> Optional[Path]:
         work = PROJECT_DIR / f"_tmp_{int(time.time())}"
         work.mkdir(exist_ok=True)
 
         safe_name = self._safe(f"{song.artist} - {song.title}")
-        final     = self.songs_dir / safe_name
+        final     = target_dir / safe_name
 
         try:
-            # 1) Encontrar o arquivo rb3con (binário grande sem extensão)
             rb3con = self._find_rb3con(src)
 
             if rb3con:
@@ -267,13 +287,11 @@ class SongConverter:
                     log("❌  Onyx não conseguiu processar o arquivo")
                     return None
             else:
-                # Talvez os arquivos já estejam soltos dentro de src
                 for item in src.rglob("*"):
                     if item.is_file():
                         dst = work / item.name
                         shutil.copy2(item, dst)
 
-            # 2) Desencriptar MOGGs encontrados
             moggs = list(work.rglob("*.mogg"))
             ogg_path: Optional[Path] = None
 
@@ -287,7 +305,7 @@ class SongConverter:
                 if r.returncode == 0 and raw.exists():
                     ogg_path = raw
                 else:
-                    log(f"⚠️   Onyx unwrap falhou — tentando ffmpeg direto no MOGG")
+                    log("⚠️   Onyx unwrap falhou — tentando ffmpeg direto no MOGG")
                     ogg_path = moggs[0]
             else:
                 candidates = [
@@ -297,7 +315,6 @@ class SongConverter:
                 if candidates:
                     ogg_path = candidates[0]
 
-            # 3) Reencodar → 44 100 Hz stereo
             final_ogg: Optional[Path] = None
             if ogg_path and ogg_path.exists():
                 log("🎵  Reencodando → 44 100 Hz stereo...")
@@ -314,12 +331,10 @@ class SongConverter:
             else:
                 log("⚠️   Nenhum áudio encontrado após extração")
 
-            # 4) Coletar chart / ini
             mids    = list(work.rglob("*.mid"))
             charts  = list(work.rglob("*.chart"))
             ini_src = next(iter(work.rglob("song.ini")), None)
 
-            # 5) Montar pasta final
             self._backup_if_exists(final, log)
             final.mkdir(parents=True, exist_ok=True)
 
@@ -345,7 +360,6 @@ class SongConverter:
                     encoding="utf-8",
                 )
             log("✅  Metadados OK")
-
             return final
 
         except Exception as e:
@@ -355,13 +369,12 @@ class SongConverter:
             shutil.rmtree(work, ignore_errors=True)
 
     def _find_rb3con(self, folder: Path) -> Optional[Path]:
-        """Procura o arquivo RB3CON: binário grande sem extensão ou com _rb3con no nome."""
         for f in sorted(folder.rglob("*"), key=lambda p: -p.stat().st_size if p.is_file() else 0):
             if not f.is_file() or f.name.startswith("."):
                 continue
             name = f.name.lower()
             if "_rb3con" in name or f.suffix == "":
-                if f.stat().st_size > 500_000:  # arquivos > 500 KB
+                if f.stat().st_size > 500_000:
                     return f
         return None
 
@@ -384,26 +397,24 @@ class SongConverter:
             log(f"⚠️   Onyx extract: {r.stderr[:150]}")
         return r.returncode == 0
 
-    # ── Pipeline nativo (CH / YARG / PS) ─────────────────────────────────────
+    # ── Pipeline nativo (CH / FGB / PS) ──────────────────────────────────────
 
     def _pipeline_native(
         self,
-        song:   RVSong,
-        src:    Path,
-        log:    Callable,
+        song:       RVSong,
+        src:        Path,
+        log:        Callable,
+        target_dir: Path,
     ) -> Optional[Path]:
         safe_name = self._safe(f"{song.artist} - {song.title}")
-        final     = self.songs_dir / safe_name
+        final     = target_dir / safe_name
 
-        # Se o src JÁ É a pasta final, trabalhar in-place
         if src.resolve() == final.resolve():
             return self._fix_audio_inplace(final, log)
 
-        # Senão, copiar para a pasta final
         self._backup_if_exists(final, log)
         final.mkdir(parents=True, exist_ok=True)
 
-        # Encontrar raiz do conteúdo dentro do src
         content_root = self._find_content_root(src)
         try:
             display = content_root.relative_to(PROJECT_DIR)
@@ -421,7 +432,6 @@ class SongConverter:
         return self._fix_audio_inplace(final, log)
 
     def _find_content_root(self, base: Path) -> Path:
-        """Encontra a pasta que contém o ogg/mid/chart — pode ser base ou uma subpasta."""
         for folder in [base] + [d for d in base.rglob("*") if d.is_dir()]:
             files = {f.name.lower() for f in folder.iterdir() if f.is_file()}
             if "song.ogg" in files or "notes.mid" in files or "notes.chart" in files:
@@ -429,14 +439,9 @@ class SongConverter:
         return base
 
     def _fix_audio_inplace(self, folder: Path, log: Callable) -> Optional[Path]:
-        """
-        Verifica e corrige todos os arquivos de áudio OGG/OPUS em folder.
-        Suporta song.ogg, stems CH (guitar.ogg, drums.ogg, etc.) e song.mogg.
-        """
         ogg  = folder / "song.ogg"
         mogg = folder / "song.mogg"
 
-        # MOGG sem OGG → precisa unwrap primeiro
         if mogg.exists() and not ogg.exists():
             log("🔓  Desencriptando MOGG...")
             raw = folder / "song_raw.ogg"
@@ -445,7 +450,6 @@ class SongConverter:
                 capture_output=True, text=True, timeout=90,
             )
             if r.returncode == 0 and raw.exists():
-                # Reencode o raw imediatamente para song.ogg correto
                 ogg = folder / "song.ogg"
                 r2 = subprocess.run(
                     ["ffmpeg", "-y", "-i", str(raw),
@@ -462,7 +466,6 @@ class SongConverter:
                 log("❌  Onyx unwrap falhou no MOGG")
                 return None
 
-        # Coletar todos os OGGs da pasta (song.ogg + stems)
         all_oggs = [
             f for f in folder.iterdir()
             if f.is_file() and f.suffix in (".ogg", ".opus")
@@ -473,7 +476,6 @@ class SongConverter:
             log(f"⚠️   Sem arquivos de áudio — música pode não tocar no {FGB}")
             return folder
 
-        # Verificar se algum precisa reencode
         needs_fix = []
         already_ok = []
         for af in all_oggs:
@@ -502,7 +504,7 @@ class SongConverter:
                 log(f"  ✅  {af.name}")
                 bak.unlink(missing_ok=True)
             else:
-                shutil.copy2(bak, af)   # rollback
+                shutil.copy2(bak, af)
                 log(f"  ❌  {af.name}: {r.stderr[-80:]}")
                 return None
 
@@ -522,6 +524,46 @@ class SongConverter:
         safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(". ")
         return safe[:120] or "song"
 
+    # ── Local library scan ────────────────────────────────────────────────────
+
+    def list_local(self) -> List[dict]:
+        """Returns all songs in songs_staging/ and songs/ with status info."""
+        result = []
+        for base, status in [(self.staging_dir, "staged"), (self.songs_dir, "official")]:
+            if not base.exists():
+                continue
+            for folder in sorted(base.iterdir()):
+                if not folder.is_dir() or folder.name.startswith("_"):
+                    continue
+                compat = self.check_compat(folder)
+                meta   = self._read_ini(folder)
+                result.append({
+                    "status":     status,
+                    "folder":     folder,
+                    "name":       folder.name,
+                    "artist":     meta.get("artist", ""),
+                    "title":      meta.get("name", folder.name),
+                    "charter":    meta.get("charter", ""),
+                    "compatible": compat.compatible,
+                    "compat":     compat,
+                })
+        return result
+
+    @staticmethod
+    def _read_ini(folder: Path) -> dict:
+        meta: dict = {}
+        ini = folder / "song.ini"
+        if not ini.exists():
+            return meta
+        try:
+            for line in ini.read_text(encoding="utf-8", errors="replace").splitlines():
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    meta[k.strip().lower()] = v.strip()
+        except Exception:
+            pass
+        return meta
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Statistics engine
@@ -532,21 +574,19 @@ class StatsManager:
 
     STATS_FILE = PROJECT_DIR / "fgb_stats.json"
 
-    # ── Persistência de histórico ─────────────────────────────────────────────
-
     @classmethod
     def record_download(cls, song: RVSong, success: bool) -> None:
         hist = cls._load_history()
         hist["downloads"].append({
-            "ts":        time.time(),
-            "date":      time.strftime("%Y-%m-%d"),
-            "artist":    song.artist,
-            "title":     song.title,
-            "charter":   song.charter or "",
+            "ts":         time.time(),
+            "date":       time.strftime("%Y-%m-%d"),
+            "artist":     song.artist,
+            "title":      song.title,
+            "charter":    song.charter or "",
             "gameformat": song.gameformat,
-            "genre":     song.genre or "",
-            "year":      song.year or 0,
-            "success":   success,
+            "genre":      song.genre or "",
+            "year":       song.year or 0,
+            "success":    success,
         })
         cls.STATS_FILE.write_text(
             json.dumps(hist, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -560,8 +600,6 @@ class StatsManager:
         except Exception:
             pass
         return {"downloads": []}
-
-    # ── Leitura da biblioteca ─────────────────────────────────────────────────
 
     @staticmethod
     def _parse_ini(path: Path) -> dict:
@@ -577,17 +615,15 @@ class StatsManager:
 
     @classmethod
     def read_library(cls) -> List[dict]:
-        """Retorna lista de dicts com metadados de cada música em songs/."""
         songs = []
         if not SONGS_DIR.exists():
             return songs
         for folder in SONGS_DIR.iterdir():
             if not folder.is_dir():
                 continue
-            ini = folder / "song.ini"
+            ini  = folder / "song.ini"
             data = cls._parse_ini(ini) if ini.exists() else {}
             data["_folder"] = folder.name
-            # Detect audio / chart presence
             data["_has_audio"] = any(
                 f.suffix in (".ogg", ".opus") for f in folder.iterdir() if f.is_file()
             ) if folder.exists() else False
@@ -597,8 +633,6 @@ class StatsManager:
             ) if folder.exists() else False
             songs.append(data)
         return songs
-
-    # ── Cálculo ───────────────────────────────────────────────────────────────
 
     @classmethod
     def compute(cls) -> dict:
@@ -621,15 +655,12 @@ class StatsManager:
                     c[val] += 1
             return c
 
-        # Library
         lib_charters = counter_field(lib, "charter")
         lib_artists  = counter_field(lib, "artist")
-        lib_genres   = counter_field(lib, "genre",   normalize=True)
-        lib_formats  = counter_field(lib, "gameformat")
+        lib_genres   = counter_field(lib, "genre",  normalize=True)
         lib_albums   = counter_field(lib, "album",
                                      filter_fn=lambda v: len(v) > 1 and v.lower() != "unknown album")
 
-        # Decade breakdown
         decade_c: collections.Counter = collections.Counter()
         for s in lib:
             try:
@@ -639,7 +670,6 @@ class StatsManager:
             except ValueError:
                 pass
 
-        # Instrument coverage (from library ini: diff_guitar, etc.)
         inst_c: collections.Counter = collections.Counter()
         for s in lib:
             for inst in ("guitar", "bass", "drums", "vocals", "keys"):
@@ -649,16 +679,13 @@ class StatsManager:
                 except ValueError:
                     pass
 
-        # Download history
         dl_charters = counter_field(ok, "charter")
         dl_artists  = counter_field(ok, "artist")
-        dl_genres   = counter_field(ok, "genre",   normalize=True)
+        dl_genres   = counter_field(ok, "genre",  normalize=True)
         dl_formats  = counter_field(ok, "gameformat")
 
-        # Streak: consecutive successful days (from history)
-        days = sorted({d["date"] for d in ok}) if ok else []
+        days   = sorted({d["date"] for d in ok}) if ok else []
         streak = cls._day_streak(days)
-
         recent = sorted(dls, key=lambda x: x.get("ts", 0), reverse=True)[:8]
 
         return {
@@ -670,7 +697,6 @@ class StatsManager:
                 "artists":    top(lib_artists),
                 "genres":     top(lib_genres, 8),
                 "albums":     top(lib_albums, 8),
-                "formats":    top(lib_formats),
                 "decades":    sorted(decade_c.items()),
                 "instruments": list(inst_c.most_common()),
             },
@@ -689,7 +715,6 @@ class StatsManager:
 
     @staticmethod
     def _day_streak(sorted_days: List[str]) -> int:
-        """Conta a maior sequência de dias consecutivos com download."""
         if not sorted_days:
             return 0
         from datetime import date, timedelta
@@ -705,7 +730,7 @@ class StatsManager:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UI — Fross Song Manager
+# UI — Fross Song Manager  ·  Matrix Edition
 # ══════════════════════════════════════════════════════════════════════════════
 
 FILTER_FORMATS = [
@@ -720,28 +745,27 @@ class App(tk.Tk):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title(f"🎸  Fross Song Manager")
-        self.geometry("1160x720")
-        self.minsize(900, 580)
+        self.title("🎸  Fross Song Manager  ·  Matrix Edition")
+        self.geometry("1200x740")
+        self.minsize(940, 600)
         self.configure(bg=BG)
 
-        # Data
         cfg = {"rhythmverse": {
             "base_url":      "https://rhythmverse.co",
-            "download_path": str(SONGS_DIR),
+            "download_path": str(STAGING_DIR),
             "cache_ttl_seconds": 300,
         }}
-        self._client     = RhythmverseClient(cfg, download_dir=str(SONGS_DIR))
-        self._conv       = SongConverter()
-        self._songs:     List[RVSong] = []
-        self._selected:  Optional[RVSong] = None
-        self._page       = 1
+        self._client      = RhythmverseClient(cfg, download_dir=str(STAGING_DIR))
+        self._conv        = SongConverter()
+        self._songs:      List[RVSong] = []
+        self._selected:   Optional[RVSong] = None
+        self._page        = 1
         self._total_pages = 1
         self._total_songs = 0
-        self._gameformat = "all"
-        self._loading    = False
-        self._processing = False
-        self._view       = "songs"   # "songs" | "stats"
+        self._gameformat  = "all"
+        self._loading     = False
+        self._processing  = False
+        self._view        = "songs"   # "songs" | "local" | "stats"
 
         self._style_setup()
         self._ui_build()
@@ -752,10 +776,12 @@ class App(tk.Tk):
     def _style_setup(self) -> None:
         s = ttk.Style(self)
         s.theme_use("clam")
-        s.configure(".",                background=BG,   foreground=TEXT, borderwidth=0)
-        s.configure("TFrame",           background=BG)
-        s.configure("TLabel",           background=BG,   foreground=TEXT)
-        s.configure("TScrollbar",       background=CARD, troughcolor=BG,
+        s.configure(".",
+                    background=BG, foreground=TEXT,
+                    borderwidth=0, font=(MF, 10))
+        s.configure("TFrame",       background=BG)
+        s.configure("TLabel",       background=BG,   foreground=TEXT)
+        s.configure("TScrollbar",   background=CARD, troughcolor=BG,
                     arrowcolor=DIM, bordercolor=BG)
         s.configure("Prog.Horizontal.TProgressbar",
                     background=ACCENT, troughcolor=CARD,
@@ -766,38 +792,50 @@ class App(tk.Tk):
     def _ui_build(self) -> None:
         self._build_topbar()
         self._build_main()
+        self._build_local_panel()
         self._build_stats_panel()
         self._build_statusbar()
 
     # ── Top bar ───────────────────────────────────────────────────────────────
 
     def _build_topbar(self) -> None:
-        bar = tk.Frame(self, bg=CARD, height=56)
+        bar = tk.Frame(self, bg=CARD, height=58)
         bar.pack(fill="x")
         bar.pack_propagate(False)
 
         # App name
-        tk.Label(bar, text="🎸  Fross Song Manager",
-                 bg=CARD, fg=TEXT, font=("", 15, "bold"),
-                 padx=18).pack(side="left", pady=12)
+        tk.Label(
+            bar, text="🎸  Fross Song Manager",
+            bg=CARD, fg=ACCENT, font=(MF, 14, "bold"),
+            padx=18,
+        ).pack(side="left", pady=12)
 
-        # Nav: Songs ↔ Stats (rightmost)
+        # Nav (rightmost)
         nav_frame = tk.Frame(bar, bg=CARD)
         nav_frame.pack(side="right", padx=10)
 
         self._nav_songs_btn = tk.Button(
-            nav_frame, text="🎵  Músicas",
-            bg=ACCENT, fg="white", relief="flat",
-            font=("", 10, "bold"), padx=12, pady=4, cursor="hand2",
-            activebackground=ACCENT, activeforeground="white",
+            nav_frame, text="[ 🎵 Músicas ]",
+            bg=ACCENT, fg=BG, relief="flat",
+            font=(MF, 10, "bold"), padx=10, pady=4, cursor="hand2",
+            activebackground=ACCENT, activeforeground=BG,
             command=self._show_songs_view,
         )
         self._nav_songs_btn.pack(side="left", padx=2)
 
-        self._nav_stats_btn = tk.Button(
-            nav_frame, text="📊  Estatísticas",
+        self._nav_local_btn = tk.Button(
+            nav_frame, text="[ 📂 Local ]",
             bg=CARD, fg=DIM, relief="flat",
-            font=("", 10, "bold"), padx=12, pady=4, cursor="hand2",
+            font=(MF, 10, "bold"), padx=10, pady=4, cursor="hand2",
+            activebackground=SEL, activeforeground=TEXT,
+            command=self._show_local_view,
+        )
+        self._nav_local_btn.pack(side="left", padx=2)
+
+        self._nav_stats_btn = tk.Button(
+            nav_frame, text="[ 📊 Stats ]",
+            bg=CARD, fg=DIM, relief="flat",
+            font=(MF, 10, "bold"), padx=10, pady=4, cursor="hand2",
             activebackground=SEL, activeforeground=TEXT,
             command=self._show_stats_view,
         )
@@ -805,18 +843,18 @@ class App(tk.Tk):
 
         # Format filter chips
         chip_frame = tk.Frame(bar, bg=CARD)
-        chip_frame.pack(side="right", padx=14)
+        chip_frame.pack(side="right", padx=10)
         self._fmt_btns: Dict[str, tk.Button] = {}
         for label, fmt in FILTER_FORMATS:
-            clr = FMT_CLR.get(fmt, DIM)
+            clr    = FMT_CLR.get(fmt, DIM)
             active = fmt == self._gameformat
             b = tk.Button(
                 chip_frame, text=label,
                 bg=clr if active else CARD,
-                fg="white" if active else DIM,
-                relief="flat", padx=10, pady=4,
-                font=("", 10, "bold"), cursor="hand2",
-                activebackground=clr, activeforeground="white",
+                fg=BG if active else DIM,
+                relief="flat", padx=9, pady=3,
+                font=(MF, 9, "bold"), cursor="hand2",
+                activebackground=clr, activeforeground=BG,
                 command=lambda f=fmt: self._set_format(f),
             )
             b.pack(side="left", padx=2)
@@ -826,11 +864,11 @@ class App(tk.Tk):
         self._q_var = tk.StringVar()
         placeholder = "Buscar artista, título, charter..."
         search_frame = tk.Frame(bar, bg=BORDER, padx=1, pady=1)
-        search_frame.pack(side="left", pady=10, ipady=0)
+        search_frame.pack(side="left", pady=10)
         self._search_entry = tk.Entry(
             search_frame, textvariable=self._q_var,
-            bg=CARD, fg=DIM, insertbackground=TEXT,
-            relief="flat", font=("", 12), width=30, bd=6,
+            bg=CARD, fg=DIM, insertbackground=ACCENT,
+            relief="flat", font=(MF, 11), width=28, bd=6,
         )
         self._search_entry.insert(0, placeholder)
         self._search_entry.pack()
@@ -839,13 +877,14 @@ class App(tk.Tk):
         self._search_entry.bind("<Return>",   lambda e: self._trigger_search())
 
         tk.Button(
-            bar, text="Buscar", bg=ACCENT, fg="white", relief="flat",
-            font=("", 11, "bold"), padx=16, pady=2, cursor="hand2",
-            activebackground="#3A7EC0", activeforeground="white",
+            bar, text="Buscar",
+            bg=ACCENT, fg=BG, relief="flat",
+            font=(MF, 10, "bold"), padx=14, pady=2, cursor="hand2",
+            activebackground=SUCCESS, activeforeground=BG,
             command=self._trigger_search,
-        ).pack(side="left", padx=(6, 0), pady=15)
+        ).pack(side="left", padx=(6, 0), pady=16)
 
-    # ── Main area ─────────────────────────────────────────────────────────────
+    # ── Main (songs browser) ──────────────────────────────────────────────────
 
     def _build_main(self) -> None:
         self._main = tk.Frame(self, bg=BG)
@@ -860,20 +899,20 @@ class App(tk.Tk):
         self._lb = tk.Listbox(
             list_frame, yscrollcommand=sb.set,
             bg=CARD, fg=TEXT,
-            selectbackground=SEL, selectforeground=TEXT,
+            selectbackground=SEL, selectforeground=ACCENT,
             activestyle="none", relief="flat", bd=0,
-            font=("", 12), highlightthickness=0,
+            font=(MF, 11), highlightthickness=0,
             selectborderwidth=0,
         )
         sb.config(command=self._lb.yview)
         sb.pack(side="right", fill="y")
-        self._lb.pack(fill="both", expand=True, padx=(0, 0))
+        self._lb.pack(fill="both", expand=True)
         self._lb.bind("<<ListboxSelect>>", self._on_list_select)
         self._lb.bind("<Double-Button-1>", lambda e: self._do_action())
         self._lb.bind("<Return>",          lambda e: self._do_action())
 
         # ── Right: detail panel ───────────────────────────────────────────────
-        self._detail = tk.Frame(main, bg=CARD, width=355)
+        self._detail = tk.Frame(main, bg=CARD, width=370)
         self._detail.pack(side="right", fill="y", padx=(8, 0))
         self._detail.pack_propagate(False)
         self._build_detail()
@@ -885,14 +924,21 @@ class App(tk.Tk):
         for w in d.winfo_children():
             w.destroy()
 
-        # Title + artist
-        self._d_title  = tk.Label(d, text="Selecione uma música",
-                                   bg=CARD, fg=TEXT, font=("", 14, "bold"),
-                                   wraplength=328, justify="left", anchor="w")
-        self._d_title.pack(fill="x", padx=16, pady=(16, 2))
+        # Green accent top bar
+        tk.Frame(d, bg=ACCENT, height=2).pack(fill="x")
 
-        self._d_artist = tk.Label(d, text="",
-                                   bg=CARD, fg=DIM, font=("", 11), anchor="w")
+        # Title + artist
+        self._d_title = tk.Label(
+            d, text="[ Selecione uma música ]",
+            bg=CARD, fg=ACCENT, font=(MF, 13, "bold"),
+            wraplength=340, justify="left", anchor="w",
+        )
+        self._d_title.pack(fill="x", padx=16, pady=(14, 2))
+
+        self._d_artist = tk.Label(
+            d, text="",
+            bg=CARD, fg=DIM, font=(MF, 10), anchor="w",
+        )
         self._d_artist.pack(fill="x", padx=16)
 
         self._sep(d)
@@ -909,44 +955,30 @@ class App(tk.Tk):
 
         self._sep(d)
 
-        # Compat status (small)
+        # Compat / status label
         self._compat_var = tk.StringVar(value="")
         self._compat_lbl = tk.Label(
             d, textvariable=self._compat_var,
-            bg=CARD, fg=DIM, font=("", 10),
-            wraplength=328, justify="left", anchor="w",
+            bg=CARD, fg=DIM, font=(MF, 9),
+            wraplength=340, justify="left", anchor="w",
         )
         self._compat_lbl.pack(fill="x", padx=16, pady=(4, 2))
 
         # Inline log (shown during processing)
         self._log = tk.Text(
-            d, bg=BG, fg=DIM, font=("Menlo", 9), relief="flat",
+            d, bg=BG, fg=ACCENT, font=(MF, 8), relief="flat",
             bd=0, height=7, wrap="word", state="disabled",
             highlightthickness=0,
         )
-        # Packed on demand
 
-        # Bottom: action buttons (anchored to bottom)
-        btn_fr = tk.Frame(d, bg=CARD)
-        btn_fr.pack(fill="x", padx=16, side="bottom", pady=14)
+        # Bottom: dynamic action buttons (cleared/rebuilt per song)
+        self._btn_fr = tk.Frame(d, bg=CARD)
+        self._btn_fr.pack(fill="x", padx=12, side="bottom", pady=12)
 
-        self._web_btn = tk.Button(
-            btn_fr, text="🌐  Ver no Rhythmverse",
-            bg=CARD, fg=DIM, relief="flat", font=("", 10),
-            pady=7, cursor="hand2",
-            activebackground=SEL, activeforeground=TEXT,
-            command=self._open_web, state="disabled",
-        )
-        self._web_btn.pack(fill="x", pady=(4, 0))
-
-        self._action_btn = tk.Button(
-            btn_fr, text="—",
-            bg=CARD, fg=DIM, relief="flat", font=("", 12, "bold"),
-            pady=11, cursor="hand2",
-            state="disabled",
-            command=self._do_action,
-        )
-        self._action_btn.pack(fill="x")
+    def _rebuild_buttons(self) -> None:
+        """Clear and rebuild the action buttons in self._btn_fr."""
+        for w in self._btn_fr.winfo_children():
+            w.destroy()
 
     # ── Status bar ────────────────────────────────────────────────────────────
 
@@ -956,26 +988,24 @@ class App(tk.Tk):
         bar.pack(fill="x", pady=(8, 0))
         bar.pack_propagate(False)
 
-        self._status_var = tk.StringVar(value="🌐  Conectando ao Rhythmverse...")
+        self._status_var = tk.StringVar(value="⠿  Conectando ao Rhythmverse...")
         tk.Label(
             bar, textvariable=self._status_var,
-            bg=CARD, fg=DIM, font=("", 10), anchor="w",
+            bg=CARD, fg=DIM, font=(MF, 9), anchor="w",
         ).pack(side="left", padx=14, fill="y")
 
-        # Pagination nav
         nav = tk.Frame(bar, bg=CARD)
         nav.pack(side="right", padx=10)
         tk.Button(nav, text="◀", bg=CARD, fg=DIM, relief="flat",
-                  font=("", 12), cursor="hand2",
+                  font=(MF, 11), cursor="hand2",
                   command=lambda: self._go_page(-1)).pack(side="left")
         self._page_var = tk.StringVar(value="—")
         tk.Label(nav, textvariable=self._page_var,
-                 bg=CARD, fg=DIM, font=("", 10), width=9).pack(side="left")
+                 bg=CARD, fg=DIM, font=(MF, 9), width=9).pack(side="left")
         tk.Button(nav, text="▶", bg=CARD, fg=DIM, relief="flat",
-                  font=("", 12), cursor="hand2",
+                  font=(MF, 11), cursor="hand2",
                   command=lambda: self._go_page(1)).pack(side="left")
 
-        # Progress bar (hidden until needed)
         self._prog = ttk.Progressbar(
             self, orient="horizontal", mode="determinate",
             style="Prog.Horizontal.TProgressbar",
@@ -992,7 +1022,7 @@ class App(tk.Tk):
             return
         q = self._get_query()
         self._loading = True
-        self._status_var.set("🔄  Buscando...")
+        self._status_var.set("⠿  Buscando...")
         self._lb.delete(0, "end")
 
         def task():
@@ -1014,27 +1044,35 @@ class App(tk.Tk):
         self._total_songs = result.total_songs
 
         self._lb.delete(0, "end")
-        for song in result.songs:
+        for i, song in enumerate(result.songs):
             existing = self._conv.find_existing(song)
+            staged   = self._conv.find_staged(song)
             if existing:
                 compat = self._conv.check_compat(existing)
                 icon = "✅" if compat.compatible else "🔄"
+                clr  = SUCCESS if compat.compatible else WARN
+            elif staged:
+                icon = "🧪"
+                clr  = WARN
             elif song.has_direct_download:
                 icon = "⬇ " if song.gameformat not in NEEDS_ONYX else "🔄⬇"
+                clr  = TEXT
             else:
                 icon = "🔗"
+                clr  = DIM
 
             fmt  = f"[{song.gameformat.upper()[:5]}]"
             name = song.artist + " — " + song.title if song.artist else song.title
             self._lb.insert("end", f"  {icon}  {fmt:<7}  {name}")
+            self._lb.itemconfig(i, fg=clr)
 
         q = result.query
         if q:
-            self._status_var.set(f'🔍  {result.total_songs:,} resultados para "{q}"')
+            self._status_var.set(f'⠿  {result.total_songs:,} resultados para "{q}"')
         elif result.total_songs == 0:
             self._status_var.set("❌  Sem conexão ou nenhuma música encontrada")
         else:
-            self._status_var.set(f"📂  {result.total_songs:,} músicas disponíveis")
+            self._status_var.set(f"⠿  {result.total_songs:,} músicas disponíveis")
 
         self._page_var.set(f"{self._page:,} / {self._total_pages:,}")
 
@@ -1055,7 +1093,6 @@ class App(tk.Tk):
         self._d_title.config(text=song.title or "—")
         self._d_artist.config(text=song.artist or "Artista desconhecido")
 
-        # Metadata
         for w in self._meta.winfo_children():
             w.destroy()
 
@@ -1065,85 +1102,202 @@ class App(tk.Tk):
             f = tk.Frame(self._meta, bg=CARD)
             f.pack(fill="x", pady=1)
             tk.Label(f, text=icon, bg=CARD, fg=color,
-                     font=("", 10), width=2).pack(side="left")
-            tk.Label(f, text=str(val)[:38], bg=CARD, fg=color,
-                     font=("", 10), anchor="w").pack(side="left")
+                     font=(MF, 10), width=2).pack(side="left")
+            tk.Label(f, text=str(val)[:42], bg=CARD, fg=color,
+                     font=(MF, 10), anchor="w").pack(side="left")
 
         fmt = song.gameformat
         row("🎮", GAMEFORMATS.get(fmt, fmt), FMT_CLR.get(fmt, DIM))
-        if song.charter:   row("✍", song.charter,           SUCCESS)
-        if song.genre:     row("🎵", song.genre)
-        if song.year:      row("📅", song.year)
-        if song.album:     row("💿", song.album)
+        if song.charter:    row("✍", song.charter,           SUCCESS)
+        if song.genre:      row("♪", song.genre)
+        if song.year:       row("📅", song.year)
+        if song.album:      row("💿", song.album)
         if song.audio_type: row("🔊", song.audio_type)
-        if song.downloads: row("⬇", f"{song.downloads:,}×")
+        if song.downloads:  row("⬇", f"{song.downloads:,}×")
 
-        # Instruments
         for w in self._inst.winfo_children():
             w.destroy()
         insts = [
             ("🎸", "Guitarra", song.has_guitar, song.diff_guitar),
-            ("🎵", "Baixo",    song.has_bass,   song.diff_bass),
+            ("♩",  "Baixo",    song.has_bass,   song.diff_bass),
             ("🥁", "Bateria",  song.has_drums,  song.diff_drums),
             ("🎤", "Vocal",    song.has_vocals, song.diff_vocals),
             ("🎹", "Keys",     song.has_keys,   song.diff_keys),
         ]
-        for icon, name, present, diff in insts:
+        for icon, iname, present, diff in insts:
             if present:
                 f = tk.Frame(self._inst, bg=CARD)
                 f.pack(fill="x", pady=1)
-                tk.Label(f, text=f"{icon} {name}", bg=CARD, fg=TEXT,
-                         font=("", 10), width=12, anchor="w").pack(side="left")
+                tk.Label(f, text=f"{icon} {iname}", bg=CARD, fg=TEXT,
+                         font=(MF, 10), width=12, anchor="w").pack(side="left")
                 if diff >= 0:
                     tk.Label(f, text=DIFF_STARS(diff), bg=CARD, fg=WARN,
-                             font=("", 9)).pack(side="left")
+                             font=(MF, 9)).pack(side="left")
 
-        # Compat + action
         self._set_action_for(song)
-        self._web_btn.config(state="normal")
 
     def _set_action_for(self, song: RVSong) -> None:
         existing = self._conv.find_existing(song)
-        fmt = song.gameformat.lower()
+        staged   = self._conv.find_staged(song)
+        fmt      = song.gameformat.lower()
+        self._rebuild_buttons()
 
+        def btn(text, bg, fg, cmd, pady=9, bold=True, full=True):
+            b = tk.Button(
+                self._btn_fr, text=text,
+                bg=bg, fg=fg, relief="flat",
+                font=(MF, 10, "bold" if bold else "normal"),
+                pady=pady, cursor="hand2",
+                activebackground=bg, activeforeground=fg,
+                command=cmd,
+            )
+            b.pack(fill="x", pady=2)
+            return b
+
+        def web_btn():
+            tk.Button(
+                self._btn_fr, text="  🌐  Ver no Rhythmverse",
+                bg=CARD, fg=DIM, relief="flat",
+                font=(MF, 9), pady=5, cursor="hand2",
+                activebackground=SEL, activeforeground=TEXT,
+                command=self._open_web,
+            ).pack(fill="x", pady=(0, 2))
+
+        def path_lbl(folder: Path, color: str = DIM):
+            try:
+                rel = folder.relative_to(PROJECT_DIR)
+            except ValueError:
+                rel = folder
+            tk.Label(
+                self._btn_fr, text=f"📂 ./{rel}",
+                bg=CARD, fg=color, font=(MF, 8),
+                anchor="w", cursor="hand2",
+                wraplength=340,
+            ).pack(fill="x", pady=(0, 4))
+
+        def open_folder(folder: Path):
+            subprocess.run(["open", str(folder)], check=False)
+
+        # ── CASE A: already in songs/ (official) ─────────────────────────────
         if existing:
             compat = self._conv.check_compat(existing)
             if compat.compatible:
-                self._compat_var.set(f"✅  Já no {FGB}  ({existing.name})")
-                self._action_btn.config(
-                    text="🔄  Re-processar (forçar atualização)",
-                    bg="#1E4A2A", fg=SUCCESS, state="normal",
-                )
+                self._compat_var.set(f"✅  Na biblioteca oficial")
+                self._d_title.config(fg=SUCCESS)
             else:
                 self._compat_var.set(compat.summary())
-                self._action_btn.config(
-                    text=f"🔧  Corrigir para {FGB}",
-                    bg=WARN, fg="white", state="normal",
-                )
-        elif not song.has_direct_download:
-            self._compat_var.set("🔗  Sem download direto — ver no Rhythmverse")
-            self._action_btn.config(
-                text="🌐  Abrir Página de Download",
-                bg=DIM, fg=TEXT, state="normal",
-            )
-        elif fmt in NEEDS_ONYX:
-            self._compat_var.set(
-                f"🔄  Formato {fmt.upper()} → será convertido com Onyx"
-            )
-            self._action_btn.config(
-                text=f"⬇  Baixar para {FGB}",
-                bg=ACCENT, fg="white", state="normal",
-            )
-        else:
-            self._compat_var.set(
-                f"✅  Formato {fmt.upper()} compatível com {FGB}"
-            )
-            self._action_btn.config(
-                text=f"⬇  Baixar para {FGB}",
-                bg=ACCENT, fg="white", state="normal",
-            )
+                self._d_title.config(fg=WARN)
 
-    # ── Action button ─────────────────────────────────────────────────────────
+            path_lbl(existing, SUCCESS if compat.compatible else WARN)
+
+            btn(
+                "📂  Abrir pasta no Finder",
+                CARD, TEXT,
+                lambda f=existing: open_folder(f),
+                pady=7, bold=False,
+            )
+            btn(
+                "🔄  Re-processar (forçar atualização)",
+                CARD, DIM,
+                self._do_action,
+                pady=6, bold=False,
+            )
+            web_btn()
+            return
+
+        # ── CASE B: in staging (awaiting approval) ────────────────────────────
+        if staged:
+            compat = self._conv.check_compat(staged)
+            if compat.compatible:
+                self._compat_var.set("🧪  Em teste — compatível, pronto para aprovar")
+                self._d_title.config(fg=WARN)
+            else:
+                self._compat_var.set(f"🧪  Em teste — {compat.summary()}")
+                self._d_title.config(fg=ERR)
+
+            path_lbl(staged, WARN)
+
+            # Two-column approve / reject
+            row_fr = tk.Frame(self._btn_fr, bg=CARD)
+            row_fr.pack(fill="x", pady=2)
+            tk.Button(
+                row_fr, text="✅  Aprovar → songs/",
+                bg=SUCCESS, fg=BG, relief="flat",
+                font=(MF, 10, "bold"), pady=9, cursor="hand2",
+                activebackground=ACCENT, activeforeground=BG,
+                command=lambda s=staged: self._do_approve(s),
+            ).pack(side="left", fill="both", expand=True, padx=(0, 2))
+            tk.Button(
+                row_fr, text="🗑  Descartar",
+                bg="#330000", fg=ERR, relief="flat",
+                font=(MF, 10, "bold"), pady=9, cursor="hand2",
+                activebackground=ERR, activeforeground=BG,
+                command=lambda s=staged: self._do_reject(s),
+            ).pack(side="left", fill="both", expand=True, padx=(2, 0))
+
+            btn(
+                "📂  Abrir pasta no Finder",
+                CARD, DIM,
+                lambda f=staged: open_folder(f),
+                pady=6, bold=False,
+            )
+            web_btn()
+            return
+
+        # ── CASE C: no direct download ────────────────────────────────────────
+        if not song.has_direct_download:
+            self._compat_var.set("🔗  Sem download direto — ver no Rhythmverse")
+            self._d_title.config(fg=DIM)
+            btn("🌐  Abrir Página de Download", CARD, TEXT, self._open_web, pady=10)
+            return
+
+        # ── CASE D: new download ──────────────────────────────────────────────
+        self._d_title.config(fg=ACCENT)
+        if fmt in NEEDS_ONYX:
+            self._compat_var.set(f"🔄  {fmt.upper()} → será convertido com Onyx → staging")
+        else:
+            self._compat_var.set(f"✅  {fmt.upper()} compatível — baixar para teste")
+
+        btn(
+            f"⬇  Baixar para Teste  (staging)",
+            ACCENT, BG,
+            self._do_action,
+            pady=11,
+        )
+        web_btn()
+
+    # ── Approve / Reject ──────────────────────────────────────────────────────
+
+    def _do_approve(self, staged_path: Path) -> None:
+        target = self._conv.approve_song(staged_path)
+        if target:
+            self._compat_var.set(f"✅  Aprovada!  →  {target.name}")
+            # Rebuild action buttons for the now-official state
+            if self._selected:
+                self._set_action_for(self._selected)
+            self._do_refresh_list_item(icon="✅", color=SUCCESS)
+            # Also refresh local panel if visible
+            if self._view == "local":
+                self._refresh_local()
+        else:
+            self._compat_var.set("❌  Erro ao mover para songs/")
+
+    def _do_reject(self, staged_path: Path) -> None:
+        ok = messagebox.askyesno(
+            "Descartar música",
+            f"Apagar permanentemente a pasta de staging?\n\n{staged_path.name}",
+            icon="warning",
+        )
+        if ok:
+            self._conv.reject_song(staged_path)
+            self._compat_var.set("🗑  Descartada do staging")
+            if self._selected:
+                self._set_action_for(self._selected)
+            self._do_refresh_list_item(icon="⬇ ", color=TEXT)
+            if self._view == "local":
+                self._refresh_local()
+
+    # ── Action button (download) ──────────────────────────────────────────────
 
     def _do_action(self) -> None:
         if self._processing or self._selected is None:
@@ -1155,87 +1309,106 @@ class App(tk.Tk):
             return
 
         self._processing = True
-        self._action_btn.config(state="disabled", text="⏳  Processando...")
+        self._rebuild_buttons()
+        tk.Label(
+            self._btn_fr, text="⏳  Processando...",
+            bg=CARD, fg=WARN, font=(MF, 11, "bold"),
+        ).pack(fill="x", pady=4)
         self._show_log()
 
         existing = self._conv.find_existing(song)
 
         def task():
-            log = lambda msg: self.after(0, self._log_append, msg)
-            prog = lambda p: self.after(0, self._set_progress, p)
+            log  = lambda msg: self.after(0, self._log_append, msg)
+            prog = lambda p:   self.after(0, self._set_progress, p)
 
-            # ── Download ──────────────────────────────────────────────────────
             if existing:
-                log(f"📂  Música já existe: {existing.name}")
-                log("🔍  Verificando compatibilidade...")
-                compat = self._conv.check_compat(existing)
-                log(compat.summary())
-                if compat.compatible:
-                    log("🔄  Forçando re-processamento...")
-                downloaded_path = str(existing)
+                log(f"📂  Já existe em songs/: {existing.name}")
+                log("🔄  Re-processando no lugar...")
+                result = self._conv.process_folder(
+                    song, existing, log, dest_dir=SONGS_DIR
+                )
+                dest_was_staging = False
             else:
-                log("⬇   Baixando do Rhythmverse...")
+                log("⬇   Baixando do Rhythmverse → staging...")
                 downloaded_path = self._client.download_song(song, progress_cb=prog)
                 if not downloaded_path:
                     StatsManager.record_download(song, success=False)
-                    self.after(0, self._on_done, None, "❌  Download falhou")
+                    self.after(0, self._on_done, None, "❌  Download falhou", False)
                     return
-                log(f"✅  Download concluído")
+                log("✅  Download concluído")
+                prog(0)
+                result = self._conv.process_folder(
+                    song, Path(downloaded_path), log, dest_dir=STAGING_DIR
+                )
+                dest_was_staging = True
 
-            # ── Convert / fix ─────────────────────────────────────────────────
-            prog(0)
-            result = self._conv.process_folder(song, Path(downloaded_path), log)
-
-            # ── Verify ────────────────────────────────────────────────────────
             if result and result.is_dir():
                 compat = self._conv.check_compat(result)
                 if compat.compatible:
-                    log(f"🎸  Pronta para o {FGB}! Faça Scan Songs.")
+                    if dest_was_staging:
+                        log("🧪  Na staging — pronto para teste no FGB!")
+                        log("✅  Aprovação: clique em [ ✅ Aprovar → songs/ ]")
+                    else:
+                        log(f"🎸  Re-processado e pronto no {FGB}!")
                     StatsManager.record_download(song, success=True)
-                    self.after(0, self._on_done, result, None)
+                    self.after(0, self._on_done, result, None, dest_was_staging)
                 else:
                     log(f"⚠️   {compat.summary()}")
                     StatsManager.record_download(song, success=False)
-                    self.after(0, self._on_done, None, "Conversão incompleta")
+                    self.after(0, self._on_done, None, "Conversão incompleta", dest_was_staging)
             else:
                 StatsManager.record_download(song, success=False)
-                self.after(0, self._on_done, None, "Falha na conversão")
+                self.after(0, self._on_done, None, "Falha na conversão", dest_was_staging)
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_done(self, folder: Optional[Path], error: Optional[str]) -> None:
+    def _on_done(
+        self,
+        folder: Optional[Path],
+        error: Optional[str],
+        was_staging: bool = False,
+    ) -> None:
         self._processing = False
         self._set_progress(0)
+        self._rebuild_buttons()
 
         if folder:
-            self._action_btn.config(
-                text=f"✅  No {FGB} — faça Scan Songs!",
-                bg="#1E4A2A", fg=SUCCESS, state="normal",
-            )
-            self._compat_var.set(f"✅  Pronta: {folder.name}")
-            # Refresh list icons
-            if self._selected:
-                self._do_refresh_list_item()
+            if was_staging:
+                # Show approve/reject buttons immediately
+                if self._selected:
+                    self._set_action_for(self._selected)
+                self._do_refresh_list_item(icon="🧪", color=WARN)
+            else:
+                if self._selected:
+                    self._set_action_for(self._selected)
+                self._do_refresh_list_item(icon="✅", color=SUCCESS)
         else:
-            self._action_btn.config(
-                text=f"❌  {error or 'Erro'}",
-                bg="#4A1E1E", fg=ERR, state="normal",
-            )
+            tk.Label(
+                self._btn_fr, text=f"❌  {error or 'Erro'}",
+                bg=CARD, fg=ERR, font=(MF, 10, "bold"),
+                anchor="w",
+            ).pack(fill="x", pady=4)
+            tk.Button(
+                self._btn_fr, text="🔁  Tentar novamente",
+                bg=CARD, fg=DIM, relief="flat",
+                font=(MF, 9), pady=6, cursor="hand2",
+                activebackground=SEL, activeforeground=TEXT,
+                command=self._do_action,
+            ).pack(fill="x", pady=2)
 
-    def _do_refresh_list_item(self) -> None:
-        """Atualiza o ícone da música selecionada na lista."""
+    def _do_refresh_list_item(self, icon: str = "✅", color: str = SUCCESS) -> None:
         sel = self._lb.curselection()
         if not sel or not self._selected:
             return
         idx  = sel[0]
         song = self._selected
         self._lb.delete(idx)
-        icon = "✅"
         fmt  = f"[{song.gameformat.upper()[:5]}]"
         name = song.artist + " — " + song.title if song.artist else song.title
         self._lb.insert(idx, f"  {icon}  {fmt:<7}  {name}")
         self._lb.selection_set(idx)
-        self._lb.itemconfig(idx, fg=SUCCESS)
+        self._lb.itemconfig(idx, fg=color)
 
     # ── Format filter ─────────────────────────────────────────────────────────
 
@@ -1244,12 +1417,12 @@ class App(tk.Tk):
             return
         self._gameformat = fmt
         self._page = 1
-        for f, btn in self._fmt_btns.items():
+        for f, b in self._fmt_btns.items():
             clr = FMT_CLR.get(f, DIM)
             if f == fmt:
-                btn.config(bg=clr, fg="white")
+                b.config(bg=clr, fg=BG)
             else:
-                btn.config(bg=CARD, fg=DIM)
+                b.config(bg=CARD, fg=DIM)
         self._do_search()
 
     def _go_page(self, delta: int) -> None:
@@ -1265,8 +1438,7 @@ class App(tk.Tk):
         self._log.delete("1.0", "end")
         self._log.config(state="disabled")
         if not self._log.winfo_ismapped():
-            self._log.pack(fill="x", padx=16, pady=4,
-                           before=self._compat_lbl)
+            self._log.pack(fill="x", padx=16, pady=4, before=self._compat_lbl)
 
     def _hide_log(self) -> None:
         self._log.pack_forget()
@@ -1313,56 +1485,69 @@ class App(tk.Tk):
 
     @staticmethod
     def _sep(parent: tk.Widget) -> None:
-        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=16, pady=6)
+        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=16, pady=5)
 
     # ── View navigation ───────────────────────────────────────────────────────
 
     def _show_songs_view(self) -> None:
         self._view = "songs"
         self._stats_panel.pack_forget()
+        self._local_panel.pack_forget()
         self._main.pack(fill="both", expand=True, padx=10, pady=(8, 0))
         self._statusbar.pack(fill="x", pady=(8, 0))
-        self._nav_songs_btn.config(bg=ACCENT, fg="white")
+        self._nav_songs_btn.config(bg=ACCENT, fg=BG)
+        self._nav_local_btn.config(bg=CARD, fg=DIM)
         self._nav_stats_btn.config(bg=CARD, fg=DIM)
+
+    def _show_local_view(self) -> None:
+        self._view = "local"
+        self._main.pack_forget()
+        self._statusbar.pack_forget()
+        self._stats_panel.pack_forget()
+        self._nav_songs_btn.config(bg=CARD, fg=DIM)
+        self._nav_local_btn.config(bg=ACCENT, fg=BG)
+        self._nav_stats_btn.config(bg=CARD, fg=DIM)
+        self._local_panel.pack(fill="both", expand=True)
+        self._refresh_local()
 
     def _show_stats_view(self) -> None:
         self._view = "stats"
         self._main.pack_forget()
         self._statusbar.pack_forget()
+        self._local_panel.pack_forget()
         self._nav_songs_btn.config(bg=CARD, fg=DIM)
-        self._nav_stats_btn.config(bg=ACCENT, fg="white")
+        self._nav_local_btn.config(bg=CARD, fg=DIM)
+        self._nav_stats_btn.config(bg=ACCENT, fg=BG)
         self._stats_panel.pack(fill="both", expand=True)
         self._refresh_stats()
 
-    # ── Stats panel ───────────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════════════
+    # Local library panel
+    # ══════════════════════════════════════════════════════════════════════════
 
-    def _build_stats_panel(self) -> None:
-        """Monta o painel de estatísticas (inicialmente oculto)."""
-        self._stats_panel = tk.Frame(self, bg=BG)
-        # será populado dinamicamente em _refresh_stats()
+    def _build_local_panel(self) -> None:
+        self._local_panel = tk.Frame(self, bg=BG)
 
-    def _refresh_stats(self) -> None:
-        """Limpa e repopula o painel de estatísticas com dados atuais."""
-        panel = self._stats_panel
+    def _refresh_local(self) -> None:
+        panel = self._local_panel
         for w in panel.winfo_children():
             w.destroy()
 
-        # Calcular stats em background
+        tk.Label(
+            panel, text="⠿  Lendo biblioteca local...",
+            bg=BG, fg=DIM, font=(MF, 11),
+        ).pack(pady=40)
+
         def load():
-            s = StatsManager.compute()
-            self.after(0, self._render_stats, s)
+            songs = self._conv.list_local()
+            self.after(0, self._render_local, songs)
 
         threading.Thread(target=load, daemon=True).start()
-        tk.Label(panel, text="🔄  Calculando estatísticas...",
-                 bg=BG, fg=DIM, font=("", 12)).pack(pady=40)
 
-    def _render_stats(self, s: dict) -> None:
-        panel = self._stats_panel
+    def _render_local(self, songs: List[dict]) -> None:
+        panel = self._local_panel
         for w in panel.winfo_children():
             w.destroy()
-
-        lib  = s["library"]
-        hist = s["history"]
 
         # ── Scrollable canvas ─────────────────────────────────────────────────
         canvas = tk.Canvas(panel, bg=BG, highlightthickness=0)
@@ -1374,137 +1559,341 @@ class App(tk.Tk):
         inner = tk.Frame(canvas, bg=BG)
         win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
 
-        def _on_resize(e):
-            canvas.itemconfig(win_id, width=e.width)
-        canvas.bind("<Configure>", _on_resize)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
         inner.bind("<Configure>", lambda e: canvas.configure(
             scrollregion=canvas.bbox("all")))
 
         def _wheel(e):
-            # macOS: delta is ±1 or small; Windows/Linux: delta is ±120
             delta = e.delta
             if abs(delta) >= 120:
                 delta = delta // 120
             canvas.yview_scroll(int(-delta), "units")
         canvas.bind_all("<MouseWheel>", _wheel)
-        # macOS trackpad (X11-style)
         canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
         canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
 
-        # ── Helpers ───────────────────────────────────────────────────────────
+        # ── Header ────────────────────────────────────────────────────────────
+        hdr = tk.Frame(inner, bg=CARD)
+        hdr.pack(fill="x")
+        tk.Frame(hdr, bg=ACCENT, height=2).pack(fill="x")
+
+        staged_n   = sum(1 for s in songs if s["status"] == "staged")
+        official_n = sum(1 for s in songs if s["status"] == "official")
+
+        hdr_row = tk.Frame(hdr, bg=CARD)
+        hdr_row.pack(fill="x", padx=20, pady=10)
+        tk.Label(
+            hdr_row,
+            text=f"[ BIBLIOTECA LOCAL ]  {official_n} na biblioteca  ·  {staged_n} aguardando aprovação",
+            bg=CARD, fg=ACCENT, font=(MF, 13, "bold"),
+        ).pack(side="left")
+        tk.Button(
+            hdr_row, text="↻ Atualizar",
+            bg=CARD, fg=DIM, relief="flat",
+            font=(MF, 9), cursor="hand2",
+            activebackground=SEL,
+            command=self._refresh_local,
+        ).pack(side="right")
+
+        if not songs:
+            tk.Label(
+                inner,
+                text="\n⠿  Nenhuma música local encontrada.\n"
+                     "   Baixe músicas na aba Músicas para começar.",
+                bg=BG, fg=DIM, font=(MF, 11),
+            ).pack(pady=40)
+            return
+
+        def section_header(text: str, color: str) -> None:
+            f = tk.Frame(inner, bg=BG)
+            f.pack(fill="x", padx=12, pady=(12, 4))
+            tk.Label(
+                f, text=text, bg=BG, fg=color,
+                font=(MF, 10, "bold"), anchor="w",
+            ).pack(side="left")
+            tk.Frame(f, bg=color, height=1).pack(
+                side="left", fill="x", expand=True, padx=(8, 0), pady=5
+            )
+
+        def song_row(item: dict) -> None:
+            status  = item["status"]
+            folder  = item["folder"]
+            compat  = item["compat"]
+            title   = item["title"] or item["name"]
+            artist  = item["artist"]
+
+            is_staged = status == "staged"
+            row_bg = CARD
+
+            f = tk.Frame(inner, bg=row_bg, padx=12, pady=8)
+            f.pack(fill="x", padx=8, pady=2)
+            tk.Frame(inner, bg=BORDER, height=1).pack(fill="x", padx=8)
+
+            # Status badge
+            if is_staged:
+                badge_bg, badge_fg = "#2A1500", WARN
+                badge_text = " 🧪 STAGING "
+            elif compat.compatible:
+                badge_bg, badge_fg = "#001800", SUCCESS
+                badge_text = " ✅ OK "
+            else:
+                badge_bg, badge_fg = "#1A0000", ERR
+                badge_text = " ⚠ ERRO "
+
+            left = tk.Frame(f, bg=row_bg)
+            left.pack(side="left", fill="both", expand=True)
+
+            top_row = tk.Frame(left, bg=row_bg)
+            top_row.pack(fill="x")
+
+            tk.Label(
+                top_row, text=badge_text,
+                bg=badge_bg, fg=badge_fg, font=(MF, 8, "bold"),
+                padx=4, pady=1,
+            ).pack(side="left", padx=(0, 8))
+
+            name_str = f"{artist} — {title}" if artist else title
+            tk.Label(
+                top_row, text=name_str[:62],
+                bg=row_bg, fg=TEXT, font=(MF, 10, "bold"),
+                anchor="w",
+            ).pack(side="left")
+
+            try:
+                rel = folder.relative_to(PROJECT_DIR)
+            except ValueError:
+                rel = folder
+
+            tk.Label(
+                left, text=f"  📂 ./{rel}",
+                bg=row_bg, fg=DIM, font=(MF, 8),
+                anchor="w",
+            ).pack(fill="x")
+
+            if not compat.compatible and compat.issues:
+                tk.Label(
+                    left, text=f"  ⚠  {compat.issues[0]}",
+                    bg=row_bg, fg=ERR, font=(MF, 8),
+                    anchor="w",
+                ).pack(fill="x")
+
+            # Action buttons (right-side)
+            btn_fr = tk.Frame(f, bg=row_bg)
+            btn_fr.pack(side="right")
+
+            def open_folder(p=folder):
+                subprocess.run(["open", str(p)], check=False)
+
+            if is_staged:
+                def approve(p=folder):
+                    self._conv.approve_song(p)
+                    self._refresh_local()
+
+                def reject(p=folder):
+                    ok = messagebox.askyesno(
+                        "Descartar", f"Apagar da staging?\n{p.name}", icon="warning"
+                    )
+                    if ok:
+                        self._conv.reject_song(p)
+                        self._refresh_local()
+
+                tk.Button(
+                    btn_fr, text="✅",
+                    bg=SUCCESS, fg=BG, relief="flat",
+                    font=(MF, 11, "bold"), width=3, pady=4, cursor="hand2",
+                    activebackground=ACCENT, activeforeground=BG,
+                    command=approve,
+                ).pack(side="left", padx=2)
+                tk.Button(
+                    btn_fr, text="🗑",
+                    bg="#330000", fg=ERR, relief="flat",
+                    font=(MF, 11, "bold"), width=3, pady=4, cursor="hand2",
+                    activebackground=ERR, activeforeground=BG,
+                    command=reject,
+                ).pack(side="left", padx=2)
+
+            tk.Button(
+                btn_fr, text="📂",
+                bg=CARD, fg=DIM, relief="flat",
+                font=(MF, 11), width=3, pady=4, cursor="hand2",
+                activebackground=SEL, activeforeground=TEXT,
+                command=open_folder,
+            ).pack(side="left", padx=2)
+
+        # ── Staged section ────────────────────────────────────────────────────
+        staged = [s for s in songs if s["status"] == "staged"]
+        if staged:
+            section_header(f"🧪  AGUARDANDO APROVAÇÃO  ({len(staged)})", WARN)
+            for item in staged:
+                song_row(item)
+
+        # ── Official section ──────────────────────────────────────────────────
+        official = [s for s in songs if s["status"] == "official"]
+        if official:
+            section_header(f"✅  BIBLIOTECA OFICIAL  ({len(official)})", SUCCESS)
+            for item in official:
+                song_row(item)
+
+        # Bottom padding
+        tk.Frame(inner, bg=BG, height=24).pack()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Stats panel
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _build_stats_panel(self) -> None:
+        self._stats_panel = tk.Frame(self, bg=BG)
+
+    def _refresh_stats(self) -> None:
+        panel = self._stats_panel
+        for w in panel.winfo_children():
+            w.destroy()
+        tk.Label(
+            panel, text="⠿  Calculando estatísticas...",
+            bg=BG, fg=DIM, font=(MF, 11),
+        ).pack(pady=40)
+
+        def load():
+            s = StatsManager.compute()
+            self.after(0, self._render_stats, s)
+
+        threading.Thread(target=load, daemon=True).start()
+
+    def _render_stats(self, s: dict) -> None:
+        panel = self._stats_panel
+        for w in panel.winfo_children():
+            w.destroy()
+
+        lib  = s["library"]
+        hist = s["history"]
+
+        canvas = tk.Canvas(panel, bg=BG, highlightthickness=0)
+        vsb = ttk.Scrollbar(panel, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = tk.Frame(canvas, bg=BG)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+        inner.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+
+        def _wheel(e):
+            delta = e.delta
+            if abs(delta) >= 120:
+                delta = delta // 120
+            canvas.yview_scroll(int(-delta), "units")
+        canvas.bind_all("<MouseWheel>", _wheel)
+        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
 
         def big_card(parent, emoji, value, label, color=ACCENT):
             f = tk.Frame(parent, bg=CARD, padx=16, pady=12)
             f.pack(side="left", fill="both", expand=True, padx=4)
-            tk.Label(f, text=emoji, bg=CARD, font=("", 22)).pack()
+            tk.Label(f, text=emoji, bg=CARD, font=(MF, 20)).pack()
             tk.Label(f, text=str(value), bg=CARD, fg=color,
-                     font=("", 26, "bold")).pack()
-            tk.Label(f, text=label, bg=CARD, fg=DIM, font=("", 10)).pack()
+                     font=(MF, 24, "bold")).pack()
+            tk.Label(f, text=label, bg=CARD, fg=DIM, font=(MF, 9)).pack()
 
         def make_row(pad_y: int = 4) -> tk.Frame:
-            """Horizontal container that fills the full width."""
             r = tk.Frame(inner, bg=BG)
             r.pack(fill="x", padx=8, pady=pad_y)
             return r
 
-        def panel_box(parent, title: str, weight: int = 1) -> tk.Frame:
-            """Panel card inside a row — expands to fill."""
+        def panel_box(parent, title: str) -> tk.Frame:
             box = tk.Frame(parent, bg=CARD, padx=14, pady=10)
             box.pack(side="left", fill="both", expand=True, padx=4)
-            tk.Label(box, text=title, bg=CARD, fg=TEXT,
-                     font=("", 12, "bold"), anchor="w").pack(fill="x", pady=(0, 6))
+            f = tk.Frame(box, bg=CARD)
+            f.pack(fill="x", pady=(0, 6))
+            tk.Frame(f, bg=ACCENT, width=3).pack(side="left", fill="y", padx=(0, 6))
+            tk.Label(f, text=title, bg=CARD, fg=TEXT,
+                     font=(MF, 11, "bold"), anchor="w").pack(side="left")
             return box
 
         def bar_chart(parent, items: List[Tuple[str, int]], color: str = ACCENT,
                       max_w: int = 180) -> None:
             if not items:
                 tk.Label(parent, text="  (sem dados)", bg=CARD, fg=DIM,
-                         font=("", 10)).pack(anchor="w")
+                         font=(MF, 9)).pack(anchor="w")
                 return
             max_val = max(v for _, v in items) or 1
             for lbl, val in items:
                 r = tk.Frame(parent, bg=CARD)
                 r.pack(fill="x", pady=1)
                 tk.Label(r, text=lbl[:24], bg=CARD, fg=TEXT,
-                         font=("", 10), width=20, anchor="w").pack(side="left")
+                         font=(MF, 9), width=20, anchor="w").pack(side="left")
                 bar_w = max(4, int(val / max_val * max_w))
-                tk.Frame(r, bg=color, width=bar_w, height=14).pack(side="left", pady=2)
+                tk.Frame(r, bg=color, width=bar_w, height=12).pack(side="left", pady=2)
                 tk.Label(r, text=f" {val}", bg=CARD, fg=DIM,
-                         font=("", 9)).pack(side="left")
+                         font=(MF, 8)).pack(side="left")
 
-        # ── Header ────────────────────────────────────────────────────────────
+        # Header
         hdr = tk.Frame(inner, bg=CARD)
         hdr.pack(fill="x", pady=(0, 2))
-        tk.Label(hdr, text=f"📊  {FGB} — Estatísticas",
-                 bg=CARD, fg=TEXT, font=("", 16, "bold"),
-                 padx=20, pady=14).pack(side="left")
-        tk.Button(hdr, text="↻  Atualizar", bg=CARD, fg=DIM,
-                  relief="flat", font=("", 10), cursor="hand2",
+        tk.Frame(hdr, bg=ACCENT, height=2).pack(fill="x")
+        hdr_row = tk.Frame(hdr, bg=CARD)
+        hdr_row.pack(fill="x", padx=20, pady=10)
+        tk.Label(hdr_row, text=f"[ {FGB} — ESTATÍSTICAS ]",
+                 bg=CARD, fg=ACCENT, font=(MF, 14, "bold")).pack(side="left")
+        tk.Button(hdr_row, text="↻ Atualizar", bg=CARD, fg=DIM,
+                  relief="flat", font=(MF, 9), cursor="hand2",
                   command=self._refresh_stats,
-                  activebackground=SEL).pack(side="right", padx=20)
+                  activebackground=SEL).pack(side="right")
 
-        # ── Big number cards ──────────────────────────────────────────────────
         total_dl = hist["total"]
         ok_dl    = hist["success"]
         rate     = f"{ok_dl/total_dl*100:.0f}%" if total_dl else "—"
 
         cards_row = make_row(8)
-        big_card(cards_row, "🎵", lib["total"],          "músicas",              SUCCESS)
-        big_card(cards_row, "🎸", lib["n_artists"],      "artistas distintos",   ACCENT)
-        big_card(cards_row, "✍",  lib["n_charters"],     "contribuidores",       WARN)
-        big_card(cards_row, "⬇",  ok_dl,                 "downloads ok",         ACCENT)
-        big_card(cards_row, "✅", rate,                  "taxa de sucesso",      SUCCESS)
+        big_card(cards_row, "🎵", lib["total"],      "músicas",            SUCCESS)
+        big_card(cards_row, "🎸", lib["n_artists"],  "artistas",           ACCENT)
+        big_card(cards_row, "✍",  lib["n_charters"], "contribuidores",     WARN)
+        big_card(cards_row, "⬇",  ok_dl,             "downloads ok",       ACCENT)
+        big_card(cards_row, "✅", rate,              "taxa de sucesso",    SUCCESS)
         if hist["streak"] > 1:
-            big_card(cards_row, "🔥", hist["streak"], "dias seguidos", ERR)
+            big_card(cards_row, "🔥", hist["streak"], "dias seguidos",     ERR)
 
-        # ── Row 1: Top Contribuidores | Top Artistas ──────────────────────────
         r1 = make_row()
-        p1L = panel_box(r1, "🏆  Top Contribuidores  (biblioteca)")
-        bar_chart(p1L, lib["charters"][:8], WARN)
-        p1R = panel_box(r1, "🎤  Top Artistas  (biblioteca)")
-        bar_chart(p1R, lib["artists"][:8], ACCENT)
+        bar_chart(panel_box(r1, "🏆  Top Contribuidores"), lib["charters"][:8], WARN)
+        bar_chart(panel_box(r1, "🎤  Top Artistas"),        lib["artists"][:8],  ACCENT)
 
-        # ── Row 2: Gêneros | Top Álbuns ───────────────────────────────────────
         r2 = make_row()
-        p2L = panel_box(r2, "🎭  Gêneros")
-        bar_chart(p2L, lib["genres"][:8], "#B04CB4")
-        p2R = panel_box(r2, "💿  Top Álbuns")
-        bar_chart(p2R, lib["albums"][:8], "#5878B0")
+        bar_chart(panel_box(r2, "🎭  Gêneros"),    lib["genres"][:8],  "#AA44CC")
+        bar_chart(panel_box(r2, "💿  Top Álbuns"), lib["albums"][:8],  "#4488CC")
 
-        # ── Row 3: Décadas | Instrumentos ─────────────────────────────────────
         r3 = make_row()
-        p3L = panel_box(r3, "📅  Músicas por Década")
-        bar_chart(p3L, lib["decades"], "#4AB4B4")
-        p3R = panel_box(r3, "🎼  Cobertura de Instrumentos")
-        bar_chart(p3R, lib["instruments"], "#8A4ED0")
+        bar_chart(panel_box(r3, "📅  Músicas por Década"),      lib["decades"],     "#44AACC")
+        bar_chart(panel_box(r3, "🎼  Cobertura de Instrumentos"), lib["instruments"], "#8844CC")
 
-        # ── Row 4: Download history (only if downloads exist) ─────────────────
         if hist["total"] > 0:
             r4 = make_row()
-            p4L = panel_box(r4, "⬇  Contribuidores Mais Baixados")
-            bar_chart(p4L, hist["charters"][:8], SUCCESS)
-            p4R = panel_box(r4, "⬇  Artistas Mais Baixados")
-            bar_chart(p4R, hist["artists"][:8], SUCCESS)
+            bar_chart(panel_box(r4, "⬇  Contribuidores Mais Baixados"), hist["charters"][:8], SUCCESS)
+            bar_chart(panel_box(r4, "⬇  Artistas Mais Baixados"),        hist["artists"][:8],  SUCCESS)
 
-        # ── Row 5: Atividade recente (full width) ─────────────────────────────
         if hist["recent"]:
             r5 = make_row()
             p5 = tk.Frame(r5, bg=CARD, padx=14, pady=10)
             p5.pack(fill="both", expand=True, padx=4)
-            tk.Label(p5, text="🕐  Atividade Recente", bg=CARD, fg=TEXT,
-                     font=("", 12, "bold"), anchor="w").pack(fill="x", pady=(0, 6))
+            f = tk.Frame(p5, bg=CARD)
+            f.pack(fill="x", pady=(0, 6))
+            tk.Frame(f, bg=ACCENT, width=3).pack(side="left", fill="y", padx=(0, 6))
+            tk.Label(f, text="🕐  Atividade Recente", bg=CARD, fg=TEXT,
+                     font=(MF, 11, "bold"), anchor="w").pack(side="left")
             for d in hist["recent"]:
-                status = "✅" if d.get("success") else "❌"
+                status  = "✅" if d.get("success") else "❌"
                 fmt_tag = d.get("gameformat", "?").upper()
                 charter = f"  ✍ {d['charter']}" if d.get("charter") else ""
-                line = (f"{status}  {d.get('date','—')}    "
-                        f"{d.get('artist','?')} — {d.get('title','?')}"
-                        f"  [{fmt_tag}]{charter}")
-                tk.Label(p5, text=line,
-                         bg=CARD, fg=TEXT if d.get("success") else ERR,
-                         font=("", 10), anchor="w").pack(fill="x", pady=1)
+                line    = (f"{status}  {d.get('date','—')}    "
+                           f"{d.get('artist','?')} — {d.get('title','?')}"
+                           f"  [{fmt_tag}]{charter}")
+                tk.Label(
+                    p5, text=line,
+                    bg=CARD, fg=TEXT if d.get("success") else ERR,
+                    font=(MF, 9), anchor="w",
+                ).pack(fill="x", pady=1)
 
-        # Bottom padding
         tk.Frame(inner, bg=BG, height=20).pack()
 
 
@@ -1528,10 +1917,9 @@ def _check_deps() -> bool:
         print(f"    pip3 install {' '.join(missing)}")
         return False
 
-    # Check external tools
     for tool in ("ffmpeg", "ffprobe"):
         if not shutil.which(tool):
-            print(f"⚠️   '{tool}' não encontrado no PATH — conversão de áudio pode falhar")
+            print(f"⚠️   '{tool}' não encontrado no PATH — conversão pode falhar")
             print("    Instale via: brew install ffmpeg")
 
     if not ONYX_CLI.exists():
@@ -1545,6 +1933,6 @@ if __name__ == "__main__":
     if not _check_deps():
         sys.exit(1)
 
-    print("🎸  Fross Song Manager — iniciando...")
+    print("🎸  Fross Song Manager  ·  Matrix Edition — iniciando...")
     app = App()
     app.mainloop()

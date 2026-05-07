@@ -773,6 +773,9 @@ class App(tk.Tk):
         self._loading     = False
         self._processing  = False
         self._view        = "songs"   # "songs" | "local" | "stats"
+        self._per_page    = 25
+        self._sort_by     = "date"    # "date"|"title"|"artist"|"downloads"|"guitar"
+        self._sort_order  = "desc"    # "asc"|"desc"
 
         self._load_config()
         self._init_fonts()
@@ -787,6 +790,9 @@ class App(tk.Tk):
             data = json.loads(CONFIG_FILE.read_text())
             self.fz = int(data.get("font_size", FZ_DEFAULT))
             self.fz = max(FZ_MIN, min(FZ_MAX, self.fz))
+            self._per_page   = int(data.get("per_page", 25))
+            self._sort_by    = data.get("sort_by", "date")
+            self._sort_order = data.get("sort_order", "desc")
         except Exception:
             self.fz = FZ_DEFAULT
 
@@ -795,7 +801,10 @@ class App(tk.Tk):
             cfg = {}
             if CONFIG_FILE.exists():
                 cfg = json.loads(CONFIG_FILE.read_text())
-            cfg["font_size"] = self.fz
+            cfg["font_size"]  = self.fz
+            cfg["per_page"]   = self._per_page
+            cfg["sort_by"]    = self._sort_by
+            cfg["sort_order"] = self._sort_order
             CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
         except Exception:
             pass
@@ -862,16 +871,16 @@ class App(tk.Tk):
     # ── Top bar ───────────────────────────────────────────────────────────────
 
     def _build_topbar(self) -> None:
-        bar = tk.Frame(self, bg=CARD, height=58)
+        # ── Row 1: app name | search | nav ────────────────────────────────────
+        bar = tk.Frame(self, bg=CARD, height=54)
         bar.pack(fill="x")
         bar.pack_propagate(False)
 
-        # App name
         tk.Label(
             bar, text="🎸  Fross Song Manager",
             bg=CARD, fg=ACCENT, font=self.f["h1"],
             padx=18,
-        ).pack(side="left", pady=12)
+        ).pack(side="left", pady=8)
 
         # Nav (rightmost)
         nav_frame = tk.Frame(bar, bg=CARD)
@@ -929,34 +938,15 @@ class App(tk.Tk):
             command=lambda: self._set_font_size(+1),
         ).pack(side="left")
 
-        # Format filter chips
-        chip_frame = tk.Frame(bar, bg=CARD)
-        chip_frame.pack(side="right", padx=10)
-        self._fmt_btns: Dict[str, tk.Button] = {}
-        for label, fmt in FILTER_FORMATS:
-            clr    = FMT_CLR.get(fmt, DIM)
-            active = fmt == self._gameformat
-            b = tk.Button(
-                chip_frame, text=label,
-                bg=clr if active else CARD,
-                fg=BG if active else DIM,
-                relief="flat", padx=9, pady=3,
-                font=self.f["sm_b"], cursor="hand2",
-                activebackground=clr, activeforeground=BG,
-                command=lambda f=fmt: self._set_format(f),
-            )
-            b.pack(side="left", padx=2)
-            self._fmt_btns[fmt] = b
-
-        # Search
+        # Search bar (center-left)
         self._q_var = tk.StringVar()
         placeholder = "Buscar artista, título, charter..."
         search_frame = tk.Frame(bar, bg=BORDER, padx=1, pady=1)
-        search_frame.pack(side="left", pady=10)
+        search_frame.pack(side="left", pady=8, padx=(10, 0))
         self._search_entry = tk.Entry(
             search_frame, textvariable=self._q_var,
             bg=CARD, fg=DIM, insertbackground=ACCENT,
-            relief="flat", font=self.f["lg"], width=28, bd=6,
+            relief="flat", font=self.f["md"], width=36, bd=5,
         )
         self._search_entry.insert(0, placeholder)
         self._search_entry.pack()
@@ -965,12 +955,98 @@ class App(tk.Tk):
         self._search_entry.bind("<Return>",   lambda e: self._trigger_search())
 
         tk.Button(
-            bar, text="Buscar",
+            bar, text="[ Buscar ]",
             bg=ACCENT, fg=BG, relief="flat",
-            font=self.f["md_b"], padx=14, pady=2, cursor="hand2",
+            font=self.f["md_b"], padx=10, pady=4, cursor="hand2",
             activebackground=SUCCESS, activeforeground=BG,
             command=self._trigger_search,
-        ).pack(side="left", padx=(6, 0), pady=16)
+        ).pack(side="left", padx=(6, 0), pady=8)
+
+        # ── Row 2: format chips | sort | per-page ─────────────────────────────
+        bar2 = tk.Frame(self, bg=BG, height=36)
+        bar2.pack(fill="x", padx=0)
+        bar2.pack_propagate(False)
+
+        # Format chips (left)
+        chip_frame = tk.Frame(bar2, bg=BG)
+        chip_frame.pack(side="left", padx=10)
+        self._fmt_btns: Dict[str, tk.Button] = {}
+        for label, fmt in FILTER_FORMATS:
+            clr    = FMT_CLR.get(fmt, DIM)
+            active = fmt == self._gameformat
+            b = tk.Button(
+                chip_frame, text=label,
+                bg=clr if active else CARD,
+                fg=BG if active else DIM,
+                relief="flat", padx=8, pady=2,
+                font=self.f["xs_b"], cursor="hand2",
+                activebackground=clr, activeforeground=BG,
+                command=lambda f=fmt: self._set_format(f),
+            )
+            b.pack(side="left", padx=2)
+            self._fmt_btns[fmt] = b
+
+        # Sort + per-page (right)
+        ctrl_frame = tk.Frame(bar2, bg=BG)
+        ctrl_frame.pack(side="right", padx=10)
+
+        # Per-page selector
+        tk.Label(ctrl_frame, text="Exibir:", bg=BG, fg=DIM,
+                 font=self.f["xs"]).pack(side="left")
+        self._pp_btns: Dict[int, tk.Button] = {}
+        for pp in (25, 50, 100, 200):
+            active = pp == self._per_page
+            b = tk.Button(
+                ctrl_frame, text=str(pp),
+                bg=ACCENT if active else CARD,
+                fg=BG if active else DIM,
+                relief="flat", padx=6, pady=2,
+                font=self.f["xs_b"], cursor="hand2",
+                activebackground=ACCENT, activeforeground=BG,
+                command=lambda p=pp: self._set_per_page(p),
+            )
+            b.pack(side="left", padx=1)
+            self._pp_btns[pp] = b
+
+        # Sort order toggle
+        tk.Frame(ctrl_frame, bg=BORDER, width=1).pack(side="left", fill="y", padx=8, pady=4)
+
+        self._sort_order_btn = tk.Button(
+            ctrl_frame,
+            text="↓ DESC" if self._sort_order == "desc" else "↑ ASC",
+            bg=CARD, fg=DIM, relief="flat",
+            font=self.f["xs_b"], padx=6, pady=2, cursor="hand2",
+            activebackground=SEL, activeforeground=TEXT,
+            command=self._toggle_sort_order,
+        )
+        self._sort_order_btn.pack(side="left", padx=2)
+
+        # Sort-by buttons
+        tk.Frame(ctrl_frame, bg=BORDER, width=1).pack(side="left", fill="y", padx=4, pady=4)
+        tk.Label(ctrl_frame, text="Ordenar:", bg=BG, fg=DIM,
+                 font=self.f["xs"]).pack(side="left")
+
+        SORT_OPTIONS = [
+            ("Data",      "date"),
+            ("Título",    "title"),
+            ("Artista",   "artist"),
+            ("Downloads", "downloads"),
+            ("🎸 Dif",    "guitar"),
+        ]
+        self._sort_btns: Dict[str, tk.Button] = {}
+        for label, key in SORT_OPTIONS:
+            active = key == self._sort_by
+            b = tk.Button(
+                ctrl_frame, text=label,
+                bg=ACCENT if active else CARD,
+                fg=BG if active else DIM,
+                relief="flat", padx=7, pady=2,
+                font=self.f["xs_b"], cursor="hand2",
+                activebackground=ACCENT, activeforeground=BG,
+                command=lambda k=key: self._set_sort(k),
+            )
+            b.pack(side="left", padx=1)
+            self._sort_btns[key] = b
 
     # ── Main (songs browser) ──────────────────────────────────────────────────
 
@@ -1116,7 +1192,9 @@ class App(tk.Tk):
         def task():
             try:
                 result = self._client.search(
-                    query=q, page=self._page, gameformat=self._gameformat,
+                    query=q, page=self._page,
+                    gameformat=self._gameformat,
+                    records=self._per_page,
                 )
                 self.after(0, self._show_results, result)
             except Exception as ex:
@@ -1127,12 +1205,25 @@ class App(tk.Tk):
         threading.Thread(target=task, daemon=True).start()
 
     def _show_results(self, result: SearchResult) -> None:
-        self._songs       = result.songs
         self._total_pages = result.total_pages
         self._total_songs = result.total_songs
 
+        # Client-side sort
+        songs = list(result.songs)
+        rev = (self._sort_order == "desc")
+        if self._sort_by == "title":
+            songs.sort(key=lambda s: s.title.lower(), reverse=rev)
+        elif self._sort_by == "artist":
+            songs.sort(key=lambda s: s.artist.lower(), reverse=rev)
+        elif self._sort_by == "downloads":
+            songs.sort(key=lambda s: s.downloads, reverse=rev)
+        elif self._sort_by == "guitar":
+            songs.sort(key=lambda s: s.diff_guitar if s.diff_guitar >= 0 else -1, reverse=rev)
+        # "date" keeps server order
+        self._songs = songs
+
         self._lb.delete(0, "end")
-        for i, song in enumerate(result.songs):
+        for i, song in enumerate(songs):
             existing = self._conv.find_existing(song)
             staged   = self._conv.find_staged(song)
             if existing:
@@ -1162,7 +1253,9 @@ class App(tk.Tk):
         else:
             self._status_var.set(f"⠿  {result.total_songs:,} músicas disponíveis")
 
-        self._page_var.set(f"{self._page:,} / {self._total_pages:,}")
+        start = (self._page - 1) * self._per_page + 1
+        end   = min(self._page * self._per_page, self._total_songs)
+        self._page_var.set(f"  {start:,}–{end:,}  ·  pág {self._page}/{self._total_pages}  ")
 
     def _on_list_select(self, _event=None) -> None:
         sel = self._lb.curselection()
@@ -1499,6 +1592,36 @@ class App(tk.Tk):
         self._lb.itemconfig(idx, fg=color)
 
     # ── Format filter ─────────────────────────────────────────────────────────
+
+    def _set_per_page(self, pp: int) -> None:
+        if pp == self._per_page:
+            return
+        self._per_page = pp
+        for p, b in self._pp_btns.items():
+            b.config(bg=ACCENT if p == pp else CARD,
+                     fg=BG    if p == pp else DIM)
+        self._page = 1
+        self._save_config()
+        self._do_search()
+
+    def _set_sort(self, key: str) -> None:
+        if key == self._sort_by:
+            self._toggle_sort_order()
+            return
+        self._sort_by = key
+        for k, b in self._sort_btns.items():
+            b.config(bg=ACCENT if k == key else CARD,
+                     fg=BG    if k == key else DIM)
+        self._save_config()
+        self._do_search()
+
+    def _toggle_sort_order(self) -> None:
+        self._sort_order = "asc" if self._sort_order == "desc" else "desc"
+        self._sort_order_btn.config(
+            text="↓ DESC" if self._sort_order == "desc" else "↑ ASC"
+        )
+        self._save_config()
+        self._do_search()
 
     def _set_format(self, fmt: str) -> None:
         if fmt == self._gameformat:

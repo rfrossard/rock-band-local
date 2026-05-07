@@ -37,6 +37,7 @@ STAGING_DIR.mkdir(exist_ok=True)
 from network.rhythmverse_client import RhythmverseClient, RVSong, SearchResult, GAMEFORMATS  # noqa
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, messagebox
 
 # ── Matrix Palette ────────────────────────────────────────────────────────────
@@ -51,6 +52,12 @@ TEXT    = "#AAFFCC"   # pale green text
 DIM     = "#1E7A1E"   # muted green
 BORDER  = "#003300"   # dark green separator
 MF      = "Menlo"     # Matrix monospace font
+
+# ── Font-size config ──────────────────────────────────────────────────────────
+CONFIG_FILE = PROJECT_DIR / "fgb_config.json"
+FZ_DEFAULT  = 10
+FZ_MIN      = 7
+FZ_MAX      = 16
 
 FMT_CLR: Dict[str, str] = {
     "chm":     "#00AA44",
@@ -767,9 +774,65 @@ class App(tk.Tk):
         self._processing  = False
         self._view        = "songs"   # "songs" | "local" | "stats"
 
+        self._load_config()
+        self._init_fonts()
         self._style_setup()
         self._ui_build()
         self._do_search()
+
+    # ── Font-size helpers ─────────────────────────────────────────────────────
+
+    def _load_config(self) -> None:
+        try:
+            data = json.loads(CONFIG_FILE.read_text())
+            self.fz = int(data.get("font_size", FZ_DEFAULT))
+            self.fz = max(FZ_MIN, min(FZ_MAX, self.fz))
+        except Exception:
+            self.fz = FZ_DEFAULT
+
+    def _save_config(self) -> None:
+        try:
+            cfg = {}
+            if CONFIG_FILE.exists():
+                cfg = json.loads(CONFIG_FILE.read_text())
+            cfg["font_size"] = self.fz
+            CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+        except Exception:
+            pass
+
+    def _init_fonts(self) -> None:
+        b = self.fz
+        self.f: Dict[str, tkfont.Font] = {
+            "xs":   tkfont.Font(family=MF, size=b - 2, weight="normal"),
+            "xs_b": tkfont.Font(family=MF, size=b - 2, weight="bold"),
+            "sm":   tkfont.Font(family=MF, size=b - 1, weight="normal"),
+            "sm_b": tkfont.Font(family=MF, size=b - 1, weight="bold"),
+            "md":   tkfont.Font(family=MF, size=b,     weight="normal"),
+            "md_b": tkfont.Font(family=MF, size=b,     weight="bold"),
+            "lg":   tkfont.Font(family=MF, size=b + 1, weight="normal"),
+            "lg_b": tkfont.Font(family=MF, size=b + 1, weight="bold"),
+            "ti":   tkfont.Font(family=MF, size=b + 3, weight="bold"),
+            "h1":   tkfont.Font(family=MF, size=b + 4, weight="bold"),
+            "em":   tkfont.Font(family=MF, size=b + 10, weight="normal"),
+            "bn":   tkfont.Font(family=MF, size=b + 14, weight="bold"),
+        }
+
+    def _set_font_size(self, delta: int) -> None:
+        new = max(FZ_MIN, min(FZ_MAX, self.fz + delta))
+        if new == self.fz:
+            return
+        self.fz = new
+        b = self.fz
+        offsets = {
+            "xs": -2, "xs_b": -2, "sm": -1, "sm_b": -1,
+            "md":  0, "md_b":  0, "lg":  1, "lg_b":  1,
+            "ti":  3, "h1":    4, "em": 10, "bn":    14,
+        }
+        for key, off in offsets.items():
+            self.f[key].configure(size=b + off)
+        if hasattr(self, "_fz_label"):
+            self._fz_label.config(text=str(self.fz))
+        self._save_config()
 
     # ── Style ─────────────────────────────────────────────────────────────────
 
@@ -778,7 +841,7 @@ class App(tk.Tk):
         s.theme_use("clam")
         s.configure(".",
                     background=BG, foreground=TEXT,
-                    borderwidth=0, font=(MF, 10))
+                    borderwidth=0, font=self.f["md"])
         s.configure("TFrame",       background=BG)
         s.configure("TLabel",       background=BG,   foreground=TEXT)
         s.configure("TScrollbar",   background=CARD, troughcolor=BG,
@@ -806,7 +869,7 @@ class App(tk.Tk):
         # App name
         tk.Label(
             bar, text="🎸  Fross Song Manager",
-            bg=CARD, fg=ACCENT, font=(MF, 14, "bold"),
+            bg=CARD, fg=ACCENT, font=self.f["h1"],
             padx=18,
         ).pack(side="left", pady=12)
 
@@ -817,7 +880,7 @@ class App(tk.Tk):
         self._nav_songs_btn = tk.Button(
             nav_frame, text="[ 🎵 Músicas ]",
             bg=ACCENT, fg=BG, relief="flat",
-            font=(MF, 10, "bold"), padx=10, pady=4, cursor="hand2",
+            font=self.f["md_b"], padx=10, pady=4, cursor="hand2",
             activebackground=ACCENT, activeforeground=BG,
             command=self._show_songs_view,
         )
@@ -826,7 +889,7 @@ class App(tk.Tk):
         self._nav_local_btn = tk.Button(
             nav_frame, text="[ 📂 Local ]",
             bg=CARD, fg=DIM, relief="flat",
-            font=(MF, 10, "bold"), padx=10, pady=4, cursor="hand2",
+            font=self.f["md_b"], padx=10, pady=4, cursor="hand2",
             activebackground=SEL, activeforeground=TEXT,
             command=self._show_local_view,
         )
@@ -835,11 +898,36 @@ class App(tk.Tk):
         self._nav_stats_btn = tk.Button(
             nav_frame, text="[ 📊 Stats ]",
             bg=CARD, fg=DIM, relief="flat",
-            font=(MF, 10, "bold"), padx=10, pady=4, cursor="hand2",
+            font=self.f["md_b"], padx=10, pady=4, cursor="hand2",
             activebackground=SEL, activeforeground=TEXT,
             command=self._show_stats_view,
         )
         self._nav_stats_btn.pack(side="left", padx=2)
+
+        # Font-size controls  [ A- ]  10  [ A+ ]
+        fz_frame = tk.Frame(nav_frame, bg=CARD)
+        fz_frame.pack(side="left", padx=(14, 2))
+
+        tk.Button(
+            fz_frame, text="A-", bg=CARD, fg=DIM, relief="flat",
+            font=self.f["sm_b"], padx=6, pady=3, cursor="hand2",
+            activebackground=SEL, activeforeground=TEXT,
+            command=lambda: self._set_font_size(-1),
+        ).pack(side="left")
+
+        self._fz_label = tk.Label(
+            fz_frame, text=str(self.fz),
+            bg=CARD, fg=DIM, font=self.f["sm"],
+            padx=4,
+        )
+        self._fz_label.pack(side="left")
+
+        tk.Button(
+            fz_frame, text="A+", bg=CARD, fg=DIM, relief="flat",
+            font=self.f["sm_b"], padx=6, pady=3, cursor="hand2",
+            activebackground=SEL, activeforeground=TEXT,
+            command=lambda: self._set_font_size(+1),
+        ).pack(side="left")
 
         # Format filter chips
         chip_frame = tk.Frame(bar, bg=CARD)
@@ -853,7 +941,7 @@ class App(tk.Tk):
                 bg=clr if active else CARD,
                 fg=BG if active else DIM,
                 relief="flat", padx=9, pady=3,
-                font=(MF, 9, "bold"), cursor="hand2",
+                font=self.f["sm_b"], cursor="hand2",
                 activebackground=clr, activeforeground=BG,
                 command=lambda f=fmt: self._set_format(f),
             )
@@ -868,7 +956,7 @@ class App(tk.Tk):
         self._search_entry = tk.Entry(
             search_frame, textvariable=self._q_var,
             bg=CARD, fg=DIM, insertbackground=ACCENT,
-            relief="flat", font=(MF, 11), width=28, bd=6,
+            relief="flat", font=self.f["lg"], width=28, bd=6,
         )
         self._search_entry.insert(0, placeholder)
         self._search_entry.pack()
@@ -879,7 +967,7 @@ class App(tk.Tk):
         tk.Button(
             bar, text="Buscar",
             bg=ACCENT, fg=BG, relief="flat",
-            font=(MF, 10, "bold"), padx=14, pady=2, cursor="hand2",
+            font=self.f["md_b"], padx=14, pady=2, cursor="hand2",
             activebackground=SUCCESS, activeforeground=BG,
             command=self._trigger_search,
         ).pack(side="left", padx=(6, 0), pady=16)
@@ -901,7 +989,7 @@ class App(tk.Tk):
             bg=CARD, fg=TEXT,
             selectbackground=SEL, selectforeground=ACCENT,
             activestyle="none", relief="flat", bd=0,
-            font=(MF, 11), highlightthickness=0,
+            font=self.f["lg"], highlightthickness=0,
             selectborderwidth=0,
         )
         sb.config(command=self._lb.yview)
@@ -930,14 +1018,14 @@ class App(tk.Tk):
         # Title + artist
         self._d_title = tk.Label(
             d, text="[ Selecione uma música ]",
-            bg=CARD, fg=ACCENT, font=(MF, 13, "bold"),
+            bg=CARD, fg=ACCENT, font=self.f["ti"],
             wraplength=340, justify="left", anchor="w",
         )
         self._d_title.pack(fill="x", padx=16, pady=(14, 2))
 
         self._d_artist = tk.Label(
             d, text="",
-            bg=CARD, fg=DIM, font=(MF, 10), anchor="w",
+            bg=CARD, fg=DIM, font=self.f["md"], anchor="w",
         )
         self._d_artist.pack(fill="x", padx=16)
 
@@ -959,14 +1047,14 @@ class App(tk.Tk):
         self._compat_var = tk.StringVar(value="")
         self._compat_lbl = tk.Label(
             d, textvariable=self._compat_var,
-            bg=CARD, fg=DIM, font=(MF, 9),
+            bg=CARD, fg=DIM, font=self.f["sm"],
             wraplength=340, justify="left", anchor="w",
         )
         self._compat_lbl.pack(fill="x", padx=16, pady=(4, 2))
 
         # Inline log (shown during processing)
         self._log = tk.Text(
-            d, bg=BG, fg=ACCENT, font=(MF, 8), relief="flat",
+            d, bg=BG, fg=ACCENT, font=self.f["xs"], relief="flat",
             bd=0, height=7, wrap="word", state="disabled",
             highlightthickness=0,
         )
@@ -991,19 +1079,19 @@ class App(tk.Tk):
         self._status_var = tk.StringVar(value="⠿  Conectando ao Rhythmverse...")
         tk.Label(
             bar, textvariable=self._status_var,
-            bg=CARD, fg=DIM, font=(MF, 9), anchor="w",
+            bg=CARD, fg=DIM, font=self.f["sm"], anchor="w",
         ).pack(side="left", padx=14, fill="y")
 
         nav = tk.Frame(bar, bg=CARD)
         nav.pack(side="right", padx=10)
         tk.Button(nav, text="◀", bg=CARD, fg=DIM, relief="flat",
-                  font=(MF, 11), cursor="hand2",
+                  font=self.f["lg"], cursor="hand2",
                   command=lambda: self._go_page(-1)).pack(side="left")
         self._page_var = tk.StringVar(value="—")
         tk.Label(nav, textvariable=self._page_var,
-                 bg=CARD, fg=DIM, font=(MF, 9), width=9).pack(side="left")
+                 bg=CARD, fg=DIM, font=self.f["sm"], width=9).pack(side="left")
         tk.Button(nav, text="▶", bg=CARD, fg=DIM, relief="flat",
-                  font=(MF, 11), cursor="hand2",
+                  font=self.f["lg"], cursor="hand2",
                   command=lambda: self._go_page(1)).pack(side="left")
 
         self._prog = ttk.Progressbar(
@@ -1102,9 +1190,9 @@ class App(tk.Tk):
             f = tk.Frame(self._meta, bg=CARD)
             f.pack(fill="x", pady=1)
             tk.Label(f, text=icon, bg=CARD, fg=color,
-                     font=(MF, 10), width=2).pack(side="left")
+                     font=self.f["md"], width=2).pack(side="left")
             tk.Label(f, text=str(val)[:42], bg=CARD, fg=color,
-                     font=(MF, 10), anchor="w").pack(side="left")
+                     font=self.f["md"], anchor="w").pack(side="left")
 
         fmt = song.gameformat
         row("🎮", GAMEFORMATS.get(fmt, fmt), FMT_CLR.get(fmt, DIM))
@@ -1129,10 +1217,10 @@ class App(tk.Tk):
                 f = tk.Frame(self._inst, bg=CARD)
                 f.pack(fill="x", pady=1)
                 tk.Label(f, text=f"{icon} {iname}", bg=CARD, fg=TEXT,
-                         font=(MF, 10), width=12, anchor="w").pack(side="left")
+                         font=self.f["md"], width=12, anchor="w").pack(side="left")
                 if diff >= 0:
                     tk.Label(f, text=DIFF_STARS(diff), bg=CARD, fg=WARN,
-                             font=(MF, 9)).pack(side="left")
+                             font=self.f["sm"]).pack(side="left")
 
         self._set_action_for(song)
 
@@ -1146,7 +1234,7 @@ class App(tk.Tk):
             b = tk.Button(
                 self._btn_fr, text=text,
                 bg=bg, fg=fg, relief="flat",
-                font=(MF, 10, "bold" if bold else "normal"),
+                font=(self.f["md_b"] if bold else self.f["md"]),
                 pady=pady, cursor="hand2",
                 activebackground=bg, activeforeground=fg,
                 command=cmd,
@@ -1158,7 +1246,7 @@ class App(tk.Tk):
             tk.Button(
                 self._btn_fr, text="  🌐  Ver no Rhythmverse",
                 bg=CARD, fg=DIM, relief="flat",
-                font=(MF, 9), pady=5, cursor="hand2",
+                font=self.f["sm"], pady=5, cursor="hand2",
                 activebackground=SEL, activeforeground=TEXT,
                 command=self._open_web,
             ).pack(fill="x", pady=(0, 2))
@@ -1170,7 +1258,7 @@ class App(tk.Tk):
                 rel = folder
             tk.Label(
                 self._btn_fr, text=f"📂 ./{rel}",
-                bg=CARD, fg=color, font=(MF, 8),
+                bg=CARD, fg=color, font=self.f["xs"],
                 anchor="w", cursor="hand2",
                 wraplength=340,
             ).pack(fill="x", pady=(0, 4))
@@ -1223,14 +1311,14 @@ class App(tk.Tk):
             tk.Button(
                 row_fr, text="✅  Aprovar → songs/",
                 bg=SUCCESS, fg=BG, relief="flat",
-                font=(MF, 10, "bold"), pady=9, cursor="hand2",
+                font=self.f["md_b"], pady=9, cursor="hand2",
                 activebackground=ACCENT, activeforeground=BG,
                 command=lambda s=staged: self._do_approve(s),
             ).pack(side="left", fill="both", expand=True, padx=(0, 2))
             tk.Button(
                 row_fr, text="🗑  Descartar",
                 bg="#330000", fg=ERR, relief="flat",
-                font=(MF, 10, "bold"), pady=9, cursor="hand2",
+                font=self.f["md_b"], pady=9, cursor="hand2",
                 activebackground=ERR, activeforeground=BG,
                 command=lambda s=staged: self._do_reject(s),
             ).pack(side="left", fill="both", expand=True, padx=(2, 0))
@@ -1312,7 +1400,7 @@ class App(tk.Tk):
         self._rebuild_buttons()
         tk.Label(
             self._btn_fr, text="⏳  Processando...",
-            bg=CARD, fg=WARN, font=(MF, 11, "bold"),
+            bg=CARD, fg=WARN, font=self.f["lg_b"],
         ).pack(fill="x", pady=4)
         self._show_log()
 
@@ -1386,13 +1474,13 @@ class App(tk.Tk):
         else:
             tk.Label(
                 self._btn_fr, text=f"❌  {error or 'Erro'}",
-                bg=CARD, fg=ERR, font=(MF, 10, "bold"),
+                bg=CARD, fg=ERR, font=self.f["md_b"],
                 anchor="w",
             ).pack(fill="x", pady=4)
             tk.Button(
                 self._btn_fr, text="🔁  Tentar novamente",
                 bg=CARD, fg=DIM, relief="flat",
-                font=(MF, 9), pady=6, cursor="hand2",
+                font=self.f["sm"], pady=6, cursor="hand2",
                 activebackground=SEL, activeforeground=TEXT,
                 command=self._do_action,
             ).pack(fill="x", pady=2)
@@ -1535,7 +1623,7 @@ class App(tk.Tk):
 
         tk.Label(
             panel, text="⠿  Lendo biblioteca local...",
-            bg=BG, fg=DIM, font=(MF, 11),
+            bg=BG, fg=DIM, font=self.f["lg"],
         ).pack(pady=40)
 
         def load():
@@ -1585,12 +1673,12 @@ class App(tk.Tk):
         tk.Label(
             hdr_row,
             text=f"[ BIBLIOTECA LOCAL ]  {official_n} na biblioteca  ·  {staged_n} aguardando aprovação",
-            bg=CARD, fg=ACCENT, font=(MF, 13, "bold"),
+            bg=CARD, fg=ACCENT, font=self.f["ti"],
         ).pack(side="left")
         tk.Button(
             hdr_row, text="↻ Atualizar",
             bg=CARD, fg=DIM, relief="flat",
-            font=(MF, 9), cursor="hand2",
+            font=self.f["sm"], cursor="hand2",
             activebackground=SEL,
             command=self._refresh_local,
         ).pack(side="right")
@@ -1600,7 +1688,7 @@ class App(tk.Tk):
                 inner,
                 text="\n⠿  Nenhuma música local encontrada.\n"
                      "   Baixe músicas na aba Músicas para começar.",
-                bg=BG, fg=DIM, font=(MF, 11),
+                bg=BG, fg=DIM, font=self.f["lg"],
             ).pack(pady=40)
             return
 
@@ -1609,7 +1697,7 @@ class App(tk.Tk):
             f.pack(fill="x", padx=12, pady=(12, 4))
             tk.Label(
                 f, text=text, bg=BG, fg=color,
-                font=(MF, 10, "bold"), anchor="w",
+                font=self.f["md_b"], anchor="w",
             ).pack(side="left")
             tk.Frame(f, bg=color, height=1).pack(
                 side="left", fill="x", expand=True, padx=(8, 0), pady=5
@@ -1648,14 +1736,14 @@ class App(tk.Tk):
 
             tk.Label(
                 top_row, text=badge_text,
-                bg=badge_bg, fg=badge_fg, font=(MF, 8, "bold"),
+                bg=badge_bg, fg=badge_fg, font=self.f["xs_b"],
                 padx=4, pady=1,
             ).pack(side="left", padx=(0, 8))
 
             name_str = f"{artist} — {title}" if artist else title
             tk.Label(
                 top_row, text=name_str[:62],
-                bg=row_bg, fg=TEXT, font=(MF, 10, "bold"),
+                bg=row_bg, fg=TEXT, font=self.f["md_b"],
                 anchor="w",
             ).pack(side="left")
 
@@ -1666,14 +1754,14 @@ class App(tk.Tk):
 
             tk.Label(
                 left, text=f"  📂 ./{rel}",
-                bg=row_bg, fg=DIM, font=(MF, 8),
+                bg=row_bg, fg=DIM, font=self.f["xs"],
                 anchor="w",
             ).pack(fill="x")
 
             if not compat.compatible and compat.issues:
                 tk.Label(
                     left, text=f"  ⚠  {compat.issues[0]}",
-                    bg=row_bg, fg=ERR, font=(MF, 8),
+                    bg=row_bg, fg=ERR, font=self.f["xs"],
                     anchor="w",
                 ).pack(fill="x")
 
@@ -1700,14 +1788,14 @@ class App(tk.Tk):
                 tk.Button(
                     btn_fr, text="✅",
                     bg=SUCCESS, fg=BG, relief="flat",
-                    font=(MF, 11, "bold"), width=3, pady=4, cursor="hand2",
+                    font=self.f["lg_b"], width=3, pady=4, cursor="hand2",
                     activebackground=ACCENT, activeforeground=BG,
                     command=approve,
                 ).pack(side="left", padx=2)
                 tk.Button(
                     btn_fr, text="🗑",
                     bg="#330000", fg=ERR, relief="flat",
-                    font=(MF, 11, "bold"), width=3, pady=4, cursor="hand2",
+                    font=self.f["lg_b"], width=3, pady=4, cursor="hand2",
                     activebackground=ERR, activeforeground=BG,
                     command=reject,
                 ).pack(side="left", padx=2)
@@ -1715,7 +1803,7 @@ class App(tk.Tk):
             tk.Button(
                 btn_fr, text="📂",
                 bg=CARD, fg=DIM, relief="flat",
-                font=(MF, 11), width=3, pady=4, cursor="hand2",
+                font=self.f["lg"], width=3, pady=4, cursor="hand2",
                 activebackground=SEL, activeforeground=TEXT,
                 command=open_folder,
             ).pack(side="left", padx=2)
@@ -1750,7 +1838,7 @@ class App(tk.Tk):
             w.destroy()
         tk.Label(
             panel, text="⠿  Calculando estatísticas...",
-            bg=BG, fg=DIM, font=(MF, 11),
+            bg=BG, fg=DIM, font=self.f["lg"],
         ).pack(pady=40)
 
         def load():
@@ -1792,10 +1880,10 @@ class App(tk.Tk):
         def big_card(parent, emoji, value, label, color=ACCENT):
             f = tk.Frame(parent, bg=CARD, padx=16, pady=12)
             f.pack(side="left", fill="both", expand=True, padx=4)
-            tk.Label(f, text=emoji, bg=CARD, font=(MF, 20)).pack()
+            tk.Label(f, text=emoji, bg=CARD, font=self.f["em"]).pack()
             tk.Label(f, text=str(value), bg=CARD, fg=color,
-                     font=(MF, 24, "bold")).pack()
-            tk.Label(f, text=label, bg=CARD, fg=DIM, font=(MF, 9)).pack()
+                     font=self.f["bn"]).pack()
+            tk.Label(f, text=label, bg=CARD, fg=DIM, font=self.f["sm"]).pack()
 
         def make_row(pad_y: int = 4) -> tk.Frame:
             r = tk.Frame(inner, bg=BG)
@@ -1809,25 +1897,25 @@ class App(tk.Tk):
             f.pack(fill="x", pady=(0, 6))
             tk.Frame(f, bg=ACCENT, width=3).pack(side="left", fill="y", padx=(0, 6))
             tk.Label(f, text=title, bg=CARD, fg=TEXT,
-                     font=(MF, 11, "bold"), anchor="w").pack(side="left")
+                     font=self.f["lg_b"], anchor="w").pack(side="left")
             return box
 
         def bar_chart(parent, items: List[Tuple[str, int]], color: str = ACCENT,
                       max_w: int = 180) -> None:
             if not items:
                 tk.Label(parent, text="  (sem dados)", bg=CARD, fg=DIM,
-                         font=(MF, 9)).pack(anchor="w")
+                         font=self.f["sm"]).pack(anchor="w")
                 return
             max_val = max(v for _, v in items) or 1
             for lbl, val in items:
                 r = tk.Frame(parent, bg=CARD)
                 r.pack(fill="x", pady=1)
                 tk.Label(r, text=lbl[:24], bg=CARD, fg=TEXT,
-                         font=(MF, 9), width=20, anchor="w").pack(side="left")
+                         font=self.f["sm"], width=20, anchor="w").pack(side="left")
                 bar_w = max(4, int(val / max_val * max_w))
                 tk.Frame(r, bg=color, width=bar_w, height=12).pack(side="left", pady=2)
                 tk.Label(r, text=f" {val}", bg=CARD, fg=DIM,
-                         font=(MF, 8)).pack(side="left")
+                         font=self.f["xs"]).pack(side="left")
 
         # Header
         hdr = tk.Frame(inner, bg=CARD)
@@ -1836,9 +1924,9 @@ class App(tk.Tk):
         hdr_row = tk.Frame(hdr, bg=CARD)
         hdr_row.pack(fill="x", padx=20, pady=10)
         tk.Label(hdr_row, text=f"[ {FGB} — ESTATÍSTICAS ]",
-                 bg=CARD, fg=ACCENT, font=(MF, 14, "bold")).pack(side="left")
+                 bg=CARD, fg=ACCENT, font=self.f["h1"]).pack(side="left")
         tk.Button(hdr_row, text="↻ Atualizar", bg=CARD, fg=DIM,
-                  relief="flat", font=(MF, 9), cursor="hand2",
+                  relief="flat", font=self.f["sm"], cursor="hand2",
                   command=self._refresh_stats,
                   activebackground=SEL).pack(side="right")
 
@@ -1880,7 +1968,7 @@ class App(tk.Tk):
             f.pack(fill="x", pady=(0, 6))
             tk.Frame(f, bg=ACCENT, width=3).pack(side="left", fill="y", padx=(0, 6))
             tk.Label(f, text="🕐  Atividade Recente", bg=CARD, fg=TEXT,
-                     font=(MF, 11, "bold"), anchor="w").pack(side="left")
+                     font=self.f["lg_b"], anchor="w").pack(side="left")
             for d in hist["recent"]:
                 status  = "✅" if d.get("success") else "❌"
                 fmt_tag = d.get("gameformat", "?").upper()
@@ -1891,7 +1979,7 @@ class App(tk.Tk):
                 tk.Label(
                     p5, text=line,
                     bg=CARD, fg=TEXT if d.get("success") else ERR,
-                    font=(MF, 9), anchor="w",
+                    font=self.f["sm"], anchor="w",
                 ).pack(fill="x", pady=1)
 
         tk.Frame(inner, bg=BG, height=20).pack()

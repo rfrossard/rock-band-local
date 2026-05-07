@@ -1,32 +1,52 @@
 #!/usr/bin/env bash
-# Fross Song Manager — launcher macOS (duplo-clique no Finder)
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Song Manager.command  —  duplo-clique no Finder ou arrasta pro Dock
+# ─────────────────────────────────────────────────────────────────────────────
 cd "$(dirname "$0")"
 
-# Prefere python3.11 do Homebrew (tem Tk 8.6), depois pyenv 3.10, depois sistema
-if [ -x "$(brew --prefix python@3.11 2>/dev/null)/bin/python3.11" ]; then
-  PY="$(brew --prefix python@3.11)/bin/python3.11"
-elif command -v pyenv &>/dev/null && pyenv versions --bare 2>/dev/null | grep -q "3.10"; then
-  PYENV_VERSION=3.10.6; export PYENV_VERSION
-  PY="$(pyenv which python3 2>/dev/null)"
-else
-  PY="$(command -v python3)"
+# ── Limpa vars do pyenv/virtualenv ────────────────────────────────────────────
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONNOUSERSITE
+unset PYENV_VERSION PYENV_ROOT PYENV_DIR PYENV_HOOK_PATH VIRTUAL_ENV
+
+# ── Encontra python3.11 ───────────────────────────────────────────────────────
+PY=""
+for candidate in \
+    "$HOME/homebrew/Cellar/python@3.11"/*/Frameworks/Python.framework/Versions/3.11/bin/python3.11 \
+    "$HOME/homebrew/bin/python3.11" \
+    "/opt/homebrew/bin/python3.11" \
+    "/usr/local/bin/python3.11"
+do
+  if [ -x "$candidate" ]; then
+    PY="$candidate"
+    break
+  fi
+done
+
+if [ -z "$PY" ] && command -v python3.11 &>/dev/null; then
+  PY="$(command -v python3.11)"
 fi
 
 if [ -z "$PY" ]; then
-  osascript -e 'display alert "Python 3 não encontrado" message "Instale via: brew install python3" as critical'
+  echo "❌  python3.11 não encontrado."
+  echo "    Instale com: brew install python@3.11 && brew install python-tk@3.11"
+  read -p "Pressione Enter para fechar..."
   exit 1
 fi
 
-# Verifica tkinter (obrigatório)
+# ── Verifica tkinter ──────────────────────────────────────────────────────────
 "$PY" -c "import tkinter" 2>/dev/null || {
-  osascript -e 'display alert "tkinter não encontrado" message "Execute: brew install python-tk" as critical'
+  echo "❌  tkinter não encontrado."
+  echo "    Execute: brew install python-tk@3.11"
+  read -p "Pressione Enter para fechar..."
   exit 1
 }
 
-# Instala dependências se necessário (silencioso)
-"$PY" -c "import requests, bs4" 2>/dev/null || \
+# ── Instala dependências se necessário ───────────────────────────────────────
+"$PY" -c "import requests, bs4" 2>/dev/null || {
+  echo "📦  Instalando dependências..."
   "$PY" -m pip install --quiet requests beautifulsoup4
+}
 
-echo "🎸  Fross Song Manager"
+# ── Lança ─────────────────────────────────────────────────────────────────────
+echo "🎸  Fross Song Manager — Matrix Edition"
 exec "$PY" song_manager.py

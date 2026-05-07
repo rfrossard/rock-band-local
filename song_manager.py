@@ -2,14 +2,15 @@
 """
 Fross Song Manager
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Busca músicas no Rhythmverse, baixa, converte RB3CON → YARG
-e testa a compatibilidade — tudo em um clique.
+Busca músicas no Rhythmverse, baixa e converte para o
+Fross Garage Band — tudo em um clique.
 
 Uso:  python3 song_manager.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import re
@@ -20,7 +21,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Counter, Dict, List, Optional, Tuple
 
 # ── Project paths ─────────────────────────────────────────────────────────────
 PROJECT_DIR = Path(__file__).parent.resolve()
@@ -60,7 +61,9 @@ FMT_CLR: Dict[str, str] = {
     "wtde":    "#B04C18",
 }
 
-# Formatos YARG sem conversão (CH = Clone Hero também funciona)
+FGB         = "Fross Garage Band"   # nome do jogo
+
+# Formatos compatíveis com FGB sem conversão (CH = Clone Hero também funciona)
 YARG_NATIVE = {"chm", "yarg", "ps", "ch"}
 # Formatos que precisam do Onyx
 NEEDS_ONYX  = {"rb3", "rb3xbox", "rb3wii", "rb3ps3", "tbrb"}
@@ -94,7 +97,7 @@ class CompatResult:
 
     def summary(self) -> str:
         if self.compatible:
-            return "✅  Compatível com YARG"
+            return f"✅  Compatível com {FGB}"
         parts = []
         if not self.has_audio:
             parts.append("sem áudio")
@@ -107,11 +110,11 @@ class CompatResult:
 
 
 class SongConverter:
-    """Gerencia detecção, conversão e verificação de músicas para o YARG."""
+    """Gerencia detecção, conversão e verificação de músicas para o Fross Garage Band."""
 
     AUDIO_EXTS  = {".ogg", ".opus"}
     CHART_NAMES = {"notes.mid", "notes.chart", "song.chart"}
-    # CH/YARG stem names (besides song.ogg)
+    # CH/FGB stem names (besides song.ogg)
     STEM_NAMES  = {
         "guitar.ogg", "rhythm.ogg", "bass.ogg", "drums.ogg",
         "drums_1.ogg", "drums_2.ogg", "drums_3.ogg", "drums_4.ogg",
@@ -225,7 +228,7 @@ class SongConverter:
     ) -> Optional[Path]:
         """
         Recebe a pasta já baixada (extraída pelo RhythmverseClient),
-        detecta o formato e converte / corrige para o YARG.
+        detecta o formato e converte / corrige para o Fross Garage Band.
         Retorna a pasta final em songs/ ou None em caso de falha.
         """
         fmt = song.gameformat.lower()
@@ -234,7 +237,7 @@ class SongConverter:
             log(f"🔄  Formato {fmt.upper()} — convertendo com Onyx...")
             return self._pipeline_rb3(song, folder, log)
         else:
-            log(f"🎵  Formato {fmt.upper()} — ajustando para YARG...")
+            log(f"🎵  Formato {fmt.upper()} — ajustando para {FGB}...")
             return self._pipeline_native(song, folder, log)
 
     # ── Pipeline RB3 (Onyx + ffmpeg) ─────────────────────────────────────────
@@ -330,7 +333,7 @@ class SongConverter:
                 shutil.copy2(charts[0], final / "notes.chart")
                 log("✅  Chart (.chart) copiado")
             else:
-                log("⚠️   Chart não encontrado — a música ficará sem notas no YARG")
+                log(f"⚠️   Chart não encontrado — a música ficará sem notas no {FGB}")
 
             if ini_src:
                 shutil.copy2(ini_src, final / "song.ini")
@@ -467,7 +470,7 @@ class SongConverter:
         ]
 
         if not all_oggs:
-            log("⚠️   Sem arquivos de áudio — música pode não tocar no YARG")
+            log(f"⚠️   Sem arquivos de áudio — música pode não tocar no {FGB}")
             return folder
 
         # Verificar se algum precisa reencode
@@ -521,11 +524,192 @@ class SongConverter:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Statistics engine
+# ══════════════════════════════════════════════════════════════════════════════
+
+class StatsManager:
+    """Lê songs/ e fgb_stats.json para calcular estatísticas da biblioteca."""
+
+    STATS_FILE = PROJECT_DIR / "fgb_stats.json"
+
+    # ── Persistência de histórico ─────────────────────────────────────────────
+
+    @classmethod
+    def record_download(cls, song: RVSong, success: bool) -> None:
+        hist = cls._load_history()
+        hist["downloads"].append({
+            "ts":        time.time(),
+            "date":      time.strftime("%Y-%m-%d"),
+            "artist":    song.artist,
+            "title":     song.title,
+            "charter":   song.charter or "",
+            "gameformat": song.gameformat,
+            "genre":     song.genre or "",
+            "year":      song.year or 0,
+            "success":   success,
+        })
+        cls.STATS_FILE.write_text(
+            json.dumps(hist, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    @classmethod
+    def _load_history(cls) -> dict:
+        try:
+            if cls.STATS_FILE.exists():
+                return json.loads(cls.STATS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {"downloads": []}
+
+    # ── Leitura da biblioteca ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _parse_ini(path: Path) -> dict:
+        result: dict = {}
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    result[k.strip().lower()] = v.strip()
+        except Exception:
+            pass
+        return result
+
+    @classmethod
+    def read_library(cls) -> List[dict]:
+        """Retorna lista de dicts com metadados de cada música em songs/."""
+        songs = []
+        if not SONGS_DIR.exists():
+            return songs
+        for folder in SONGS_DIR.iterdir():
+            if not folder.is_dir():
+                continue
+            ini = folder / "song.ini"
+            data = cls._parse_ini(ini) if ini.exists() else {}
+            data["_folder"] = folder.name
+            # Detect audio / chart presence
+            data["_has_audio"] = any(
+                f.suffix in (".ogg", ".opus") for f in folder.iterdir() if f.is_file()
+            ) if folder.exists() else False
+            data["_has_chart"] = any(
+                f.name.lower() in ("notes.mid", "notes.chart", "song.chart")
+                for f in folder.iterdir() if f.is_file()
+            ) if folder.exists() else False
+            songs.append(data)
+        return songs
+
+    # ── Cálculo ───────────────────────────────────────────────────────────────
+
+    @classmethod
+    def compute(cls) -> dict:
+        lib  = cls.read_library()
+        hist = cls._load_history()
+        dls  = hist.get("downloads", [])
+        ok   = [d for d in dls if d.get("success")]
+
+        def top(counter: collections.Counter, n: int = 10) -> List[Tuple[str, int]]:
+            return [(k, v) for k, v in counter.most_common(n) if k]
+
+        def counter_field(items, field, filter_fn=None,
+                          normalize=False) -> collections.Counter:
+            c: collections.Counter = collections.Counter()
+            for item in items:
+                val = str(item.get(field, "") or "").strip()
+                if normalize:
+                    val = val.title()
+                if val and (filter_fn is None or filter_fn(val)):
+                    c[val] += 1
+            return c
+
+        # Library
+        lib_charters = counter_field(lib, "charter")
+        lib_artists  = counter_field(lib, "artist")
+        lib_genres   = counter_field(lib, "genre",   normalize=True)
+        lib_formats  = counter_field(lib, "gameformat")
+        lib_albums   = counter_field(lib, "album",
+                                     filter_fn=lambda v: len(v) > 1 and v.lower() != "unknown album")
+
+        # Decade breakdown
+        decade_c: collections.Counter = collections.Counter()
+        for s in lib:
+            try:
+                y = int(s.get("year", 0) or 0)
+                if 1950 <= y <= 2030:
+                    decade_c[f"{(y // 10) * 10}s"] += 1
+            except ValueError:
+                pass
+
+        # Instrument coverage (from library ini: diff_guitar, etc.)
+        inst_c: collections.Counter = collections.Counter()
+        for s in lib:
+            for inst in ("guitar", "bass", "drums", "vocals", "keys"):
+                try:
+                    if int(s.get(f"diff_{inst}", -1) or -1) >= 0:
+                        inst_c[inst.capitalize()] += 1
+                except ValueError:
+                    pass
+
+        # Download history
+        dl_charters = counter_field(ok, "charter")
+        dl_artists  = counter_field(ok, "artist")
+        dl_genres   = counter_field(ok, "genre",   normalize=True)
+        dl_formats  = counter_field(ok, "gameformat")
+
+        # Streak: consecutive successful days (from history)
+        days = sorted({d["date"] for d in ok}) if ok else []
+        streak = cls._day_streak(days)
+
+        recent = sorted(dls, key=lambda x: x.get("ts", 0), reverse=True)[:8]
+
+        return {
+            "library": {
+                "total":      len(lib),
+                "n_artists":  len(lib_artists),
+                "n_charters": len(lib_charters),
+                "charters":   top(lib_charters),
+                "artists":    top(lib_artists),
+                "genres":     top(lib_genres, 8),
+                "albums":     top(lib_albums, 8),
+                "formats":    top(lib_formats),
+                "decades":    sorted(decade_c.items()),
+                "instruments": list(inst_c.most_common()),
+            },
+            "history": {
+                "total":    len(dls),
+                "success":  len(ok),
+                "fail":     len(dls) - len(ok),
+                "charters": top(dl_charters),
+                "artists":  top(dl_artists),
+                "genres":   top(dl_genres, 8),
+                "formats":  top(dl_formats),
+                "recent":   recent,
+                "streak":   streak,
+            },
+        }
+
+    @staticmethod
+    def _day_streak(sorted_days: List[str]) -> int:
+        """Conta a maior sequência de dias consecutivos com download."""
+        if not sorted_days:
+            return 0
+        from datetime import date, timedelta
+        dates = [date.fromisoformat(d) for d in sorted_days]
+        best = cur = 1
+        for i in range(1, len(dates)):
+            if dates[i] - dates[i - 1] == timedelta(days=1):
+                cur += 1
+                best = max(best, cur)
+            else:
+                cur = 1
+        return best
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # UI — Fross Song Manager
 # ══════════════════════════════════════════════════════════════════════════════
 
 FILTER_FORMATS = [
-    ("Todos", "all"), ("CH", "chm"), ("YARG", "yarg"),
+    ("Todos", "all"), ("CH", "chm"), ("FGB", "yarg"),
     ("RB3",   "rb3"), ("PS",  "ps"), ("WTDE", "wtde"),
 ]
 
@@ -536,7 +720,7 @@ class App(tk.Tk):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("🎸  Fross Song Manager")
+        self.title(f"🎸  Fross Song Manager")
         self.geometry("1160x720")
         self.minsize(900, 580)
         self.configure(bg=BG)
@@ -557,6 +741,7 @@ class App(tk.Tk):
         self._gameformat = "all"
         self._loading    = False
         self._processing = False
+        self._view       = "songs"   # "songs" | "stats"
 
         self._style_setup()
         self._ui_build()
@@ -581,6 +766,7 @@ class App(tk.Tk):
     def _ui_build(self) -> None:
         self._build_topbar()
         self._build_main()
+        self._build_stats_panel()
         self._build_statusbar()
 
     # ── Top bar ───────────────────────────────────────────────────────────────
@@ -594,6 +780,28 @@ class App(tk.Tk):
         tk.Label(bar, text="🎸  Fross Song Manager",
                  bg=CARD, fg=TEXT, font=("", 15, "bold"),
                  padx=18).pack(side="left", pady=12)
+
+        # Nav: Songs ↔ Stats (rightmost)
+        nav_frame = tk.Frame(bar, bg=CARD)
+        nav_frame.pack(side="right", padx=10)
+
+        self._nav_songs_btn = tk.Button(
+            nav_frame, text="🎵  Músicas",
+            bg=ACCENT, fg="white", relief="flat",
+            font=("", 10, "bold"), padx=12, pady=4, cursor="hand2",
+            activebackground=ACCENT, activeforeground="white",
+            command=self._show_songs_view,
+        )
+        self._nav_songs_btn.pack(side="left", padx=2)
+
+        self._nav_stats_btn = tk.Button(
+            nav_frame, text="📊  Estatísticas",
+            bg=CARD, fg=DIM, relief="flat",
+            font=("", 10, "bold"), padx=12, pady=4, cursor="hand2",
+            activebackground=SEL, activeforeground=TEXT,
+            command=self._show_stats_view,
+        )
+        self._nav_stats_btn.pack(side="left", padx=2)
 
         # Format filter chips
         chip_frame = tk.Frame(bar, bg=CARD)
@@ -617,10 +825,10 @@ class App(tk.Tk):
         # Search
         self._q_var = tk.StringVar()
         placeholder = "Buscar artista, título, charter..."
-        entry_fr = tk.Frame(bar, bg=BORDER, padx=1, pady=1)
-        entry_fr.pack(side="left", pady=10, ipady=0)
+        search_frame = tk.Frame(bar, bg=BORDER, padx=1, pady=1)
+        search_frame.pack(side="left", pady=10, ipady=0)
         self._search_entry = tk.Entry(
-            entry_fr, textvariable=self._q_var,
+            search_frame, textvariable=self._q_var,
             bg=CARD, fg=DIM, insertbackground=TEXT,
             relief="flat", font=("", 12), width=30, bd=6,
         )
@@ -640,7 +848,8 @@ class App(tk.Tk):
     # ── Main area ─────────────────────────────────────────────────────────────
 
     def _build_main(self) -> None:
-        main = tk.Frame(self, bg=BG)
+        self._main = tk.Frame(self, bg=BG)
+        main = self._main
         main.pack(fill="both", expand=True, padx=10, pady=(8, 0))
 
         # ── Left: song list ──────────────────────────────────────────────────
@@ -742,7 +951,8 @@ class App(tk.Tk):
     # ── Status bar ────────────────────────────────────────────────────────────
 
     def _build_statusbar(self) -> None:
-        bar = tk.Frame(self, bg=CARD, height=42)
+        self._statusbar = tk.Frame(self, bg=CARD, height=42)
+        bar = self._statusbar
         bar.pack(fill="x", pady=(8, 0))
         bar.pack_propagate(False)
 
@@ -899,7 +1109,7 @@ class App(tk.Tk):
         if existing:
             compat = self._conv.check_compat(existing)
             if compat.compatible:
-                self._compat_var.set(f"✅  Já no YARG  ({existing.name})")
+                self._compat_var.set(f"✅  Já no {FGB}  ({existing.name})")
                 self._action_btn.config(
                     text="🔄  Re-processar (forçar atualização)",
                     bg="#1E4A2A", fg=SUCCESS, state="normal",
@@ -907,7 +1117,7 @@ class App(tk.Tk):
             else:
                 self._compat_var.set(compat.summary())
                 self._action_btn.config(
-                    text="🔧  Corrigir e preparar para YARG",
+                    text=f"🔧  Corrigir para {FGB}",
                     bg=WARN, fg="white", state="normal",
                 )
         elif not song.has_direct_download:
@@ -921,15 +1131,15 @@ class App(tk.Tk):
                 f"🔄  Formato {fmt.upper()} → será convertido com Onyx"
             )
             self._action_btn.config(
-                text=f"⬇  Baixar e Converter para YARG",
+                text=f"⬇  Baixar para {FGB}",
                 bg=ACCENT, fg="white", state="normal",
             )
         else:
             self._compat_var.set(
-                f"✅  Formato {fmt.upper()} compatível com YARG"
+                f"✅  Formato {fmt.upper()} compatível com {FGB}"
             )
             self._action_btn.config(
-                text=f"⬇  Baixar para YARG",
+                text=f"⬇  Baixar para {FGB}",
                 bg=ACCENT, fg="white", state="normal",
             )
 
@@ -967,6 +1177,7 @@ class App(tk.Tk):
                 log("⬇   Baixando do Rhythmverse...")
                 downloaded_path = self._client.download_song(song, progress_cb=prog)
                 if not downloaded_path:
+                    StatsManager.record_download(song, success=False)
                     self.after(0, self._on_done, None, "❌  Download falhou")
                     return
                 log(f"✅  Download concluído")
@@ -979,12 +1190,15 @@ class App(tk.Tk):
             if result and result.is_dir():
                 compat = self._conv.check_compat(result)
                 if compat.compatible:
-                    log("🎸  Pronta para o YARG! Faça Scan Songs.")
+                    log(f"🎸  Pronta para o {FGB}! Faça Scan Songs.")
+                    StatsManager.record_download(song, success=True)
                     self.after(0, self._on_done, result, None)
                 else:
                     log(f"⚠️   {compat.summary()}")
+                    StatsManager.record_download(song, success=False)
                     self.after(0, self._on_done, None, "Conversão incompleta")
             else:
+                StatsManager.record_download(song, success=False)
                 self.after(0, self._on_done, None, "Falha na conversão")
 
         threading.Thread(target=task, daemon=True).start()
@@ -995,7 +1209,7 @@ class App(tk.Tk):
 
         if folder:
             self._action_btn.config(
-                text="✅  No YARG — faça Scan Songs!",
+                text=f"✅  No {FGB} — faça Scan Songs!",
                 bg="#1E4A2A", fg=SUCCESS, state="normal",
             )
             self._compat_var.set(f"✅  Pronta: {folder.name}")
@@ -1100,6 +1314,198 @@ class App(tk.Tk):
     @staticmethod
     def _sep(parent: tk.Widget) -> None:
         tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=16, pady=6)
+
+    # ── View navigation ───────────────────────────────────────────────────────
+
+    def _show_songs_view(self) -> None:
+        self._view = "songs"
+        self._stats_panel.pack_forget()
+        self._main.pack(fill="both", expand=True, padx=10, pady=(8, 0))
+        self._statusbar.pack(fill="x", pady=(8, 0))
+        self._nav_songs_btn.config(bg=ACCENT, fg="white")
+        self._nav_stats_btn.config(bg=CARD, fg=DIM)
+
+    def _show_stats_view(self) -> None:
+        self._view = "stats"
+        self._main.pack_forget()
+        self._statusbar.pack_forget()
+        self._nav_songs_btn.config(bg=CARD, fg=DIM)
+        self._nav_stats_btn.config(bg=ACCENT, fg="white")
+        self._stats_panel.pack(fill="both", expand=True)
+        self._refresh_stats()
+
+    # ── Stats panel ───────────────────────────────────────────────────────────
+
+    def _build_stats_panel(self) -> None:
+        """Monta o painel de estatísticas (inicialmente oculto)."""
+        self._stats_panel = tk.Frame(self, bg=BG)
+        # será populado dinamicamente em _refresh_stats()
+
+    def _refresh_stats(self) -> None:
+        """Limpa e repopula o painel de estatísticas com dados atuais."""
+        panel = self._stats_panel
+        for w in panel.winfo_children():
+            w.destroy()
+
+        # Calcular stats em background
+        def load():
+            s = StatsManager.compute()
+            self.after(0, self._render_stats, s)
+
+        threading.Thread(target=load, daemon=True).start()
+        tk.Label(panel, text="🔄  Calculando estatísticas...",
+                 bg=BG, fg=DIM, font=("", 12)).pack(pady=40)
+
+    def _render_stats(self, s: dict) -> None:
+        panel = self._stats_panel
+        for w in panel.winfo_children():
+            w.destroy()
+
+        lib  = s["library"]
+        hist = s["history"]
+
+        # ── Scrollable canvas ─────────────────────────────────────────────────
+        canvas = tk.Canvas(panel, bg=BG, highlightthickness=0)
+        vsb = ttk.Scrollbar(panel, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = tk.Frame(canvas, bg=BG)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_resize(e):
+            canvas.itemconfig(win_id, width=e.width)
+        canvas.bind("<Configure>", _on_resize)
+        inner.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+
+        def _wheel(e):
+            # macOS: delta is ±1 or small; Windows/Linux: delta is ±120
+            delta = e.delta
+            if abs(delta) >= 120:
+                delta = delta // 120
+            canvas.yview_scroll(int(-delta), "units")
+        canvas.bind_all("<MouseWheel>", _wheel)
+        # macOS trackpad (X11-style)
+        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
+        # ── Helpers ───────────────────────────────────────────────────────────
+
+        def big_card(parent, emoji, value, label, color=ACCENT):
+            f = tk.Frame(parent, bg=CARD, padx=16, pady=12)
+            f.pack(side="left", fill="both", expand=True, padx=4)
+            tk.Label(f, text=emoji, bg=CARD, font=("", 22)).pack()
+            tk.Label(f, text=str(value), bg=CARD, fg=color,
+                     font=("", 26, "bold")).pack()
+            tk.Label(f, text=label, bg=CARD, fg=DIM, font=("", 10)).pack()
+
+        def make_row(pad_y: int = 4) -> tk.Frame:
+            """Horizontal container that fills the full width."""
+            r = tk.Frame(inner, bg=BG)
+            r.pack(fill="x", padx=8, pady=pad_y)
+            return r
+
+        def panel_box(parent, title: str, weight: int = 1) -> tk.Frame:
+            """Panel card inside a row — expands to fill."""
+            box = tk.Frame(parent, bg=CARD, padx=14, pady=10)
+            box.pack(side="left", fill="both", expand=True, padx=4)
+            tk.Label(box, text=title, bg=CARD, fg=TEXT,
+                     font=("", 12, "bold"), anchor="w").pack(fill="x", pady=(0, 6))
+            return box
+
+        def bar_chart(parent, items: List[Tuple[str, int]], color: str = ACCENT,
+                      max_w: int = 180) -> None:
+            if not items:
+                tk.Label(parent, text="  (sem dados)", bg=CARD, fg=DIM,
+                         font=("", 10)).pack(anchor="w")
+                return
+            max_val = max(v for _, v in items) or 1
+            for lbl, val in items:
+                r = tk.Frame(parent, bg=CARD)
+                r.pack(fill="x", pady=1)
+                tk.Label(r, text=lbl[:24], bg=CARD, fg=TEXT,
+                         font=("", 10), width=20, anchor="w").pack(side="left")
+                bar_w = max(4, int(val / max_val * max_w))
+                tk.Frame(r, bg=color, width=bar_w, height=14).pack(side="left", pady=2)
+                tk.Label(r, text=f" {val}", bg=CARD, fg=DIM,
+                         font=("", 9)).pack(side="left")
+
+        # ── Header ────────────────────────────────────────────────────────────
+        hdr = tk.Frame(inner, bg=CARD)
+        hdr.pack(fill="x", pady=(0, 2))
+        tk.Label(hdr, text=f"📊  {FGB} — Estatísticas",
+                 bg=CARD, fg=TEXT, font=("", 16, "bold"),
+                 padx=20, pady=14).pack(side="left")
+        tk.Button(hdr, text="↻  Atualizar", bg=CARD, fg=DIM,
+                  relief="flat", font=("", 10), cursor="hand2",
+                  command=self._refresh_stats,
+                  activebackground=SEL).pack(side="right", padx=20)
+
+        # ── Big number cards ──────────────────────────────────────────────────
+        total_dl = hist["total"]
+        ok_dl    = hist["success"]
+        rate     = f"{ok_dl/total_dl*100:.0f}%" if total_dl else "—"
+
+        cards_row = make_row(8)
+        big_card(cards_row, "🎵", lib["total"],          "músicas",              SUCCESS)
+        big_card(cards_row, "🎸", lib["n_artists"],      "artistas distintos",   ACCENT)
+        big_card(cards_row, "✍",  lib["n_charters"],     "contribuidores",       WARN)
+        big_card(cards_row, "⬇",  ok_dl,                 "downloads ok",         ACCENT)
+        big_card(cards_row, "✅", rate,                  "taxa de sucesso",      SUCCESS)
+        if hist["streak"] > 1:
+            big_card(cards_row, "🔥", hist["streak"], "dias seguidos", ERR)
+
+        # ── Row 1: Top Contribuidores | Top Artistas ──────────────────────────
+        r1 = make_row()
+        p1L = panel_box(r1, "🏆  Top Contribuidores  (biblioteca)")
+        bar_chart(p1L, lib["charters"][:8], WARN)
+        p1R = panel_box(r1, "🎤  Top Artistas  (biblioteca)")
+        bar_chart(p1R, lib["artists"][:8], ACCENT)
+
+        # ── Row 2: Gêneros | Top Álbuns ───────────────────────────────────────
+        r2 = make_row()
+        p2L = panel_box(r2, "🎭  Gêneros")
+        bar_chart(p2L, lib["genres"][:8], "#B04CB4")
+        p2R = panel_box(r2, "💿  Top Álbuns")
+        bar_chart(p2R, lib["albums"][:8], "#5878B0")
+
+        # ── Row 3: Décadas | Instrumentos ─────────────────────────────────────
+        r3 = make_row()
+        p3L = panel_box(r3, "📅  Músicas por Década")
+        bar_chart(p3L, lib["decades"], "#4AB4B4")
+        p3R = panel_box(r3, "🎼  Cobertura de Instrumentos")
+        bar_chart(p3R, lib["instruments"], "#8A4ED0")
+
+        # ── Row 4: Download history (only if downloads exist) ─────────────────
+        if hist["total"] > 0:
+            r4 = make_row()
+            p4L = panel_box(r4, "⬇  Contribuidores Mais Baixados")
+            bar_chart(p4L, hist["charters"][:8], SUCCESS)
+            p4R = panel_box(r4, "⬇  Artistas Mais Baixados")
+            bar_chart(p4R, hist["artists"][:8], SUCCESS)
+
+        # ── Row 5: Atividade recente (full width) ─────────────────────────────
+        if hist["recent"]:
+            r5 = make_row()
+            p5 = tk.Frame(r5, bg=CARD, padx=14, pady=10)
+            p5.pack(fill="both", expand=True, padx=4)
+            tk.Label(p5, text="🕐  Atividade Recente", bg=CARD, fg=TEXT,
+                     font=("", 12, "bold"), anchor="w").pack(fill="x", pady=(0, 6))
+            for d in hist["recent"]:
+                status = "✅" if d.get("success") else "❌"
+                fmt_tag = d.get("gameformat", "?").upper()
+                charter = f"  ✍ {d['charter']}" if d.get("charter") else ""
+                line = (f"{status}  {d.get('date','—')}    "
+                        f"{d.get('artist','?')} — {d.get('title','?')}"
+                        f"  [{fmt_tag}]{charter}")
+                tk.Label(p5, text=line,
+                         bg=CARD, fg=TEXT if d.get("success") else ERR,
+                         font=("", 10), anchor="w").pack(fill="x", pady=1)
+
+        # Bottom padding
+        tk.Frame(inner, bg=BG, height=20).pack()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

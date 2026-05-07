@@ -6,7 +6,7 @@
 ![Unity](https://img.shields.io/badge/Unity-2022-blue?logo=unity)
 ![Platform](https://img.shields.io/badge/Platform-macOS-lightgrey?logo=apple)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
-![Version](https://img.shields.io/badge/Version-2.0.0-brightgreen)
+![Version](https://img.shields.io/badge/Version-2.1.0-brightgreen)
 
 ---
 
@@ -177,6 +177,11 @@ phase-by-phase plan, session notes, and next steps.
 ---
 
 ## Changelog
+
+### v2.1.0 — 2026-05-02
+- **Fixed**: `restore_yarg.command` now restores `.bak_fgb` → audio regression after patch is recoverable
+- **Fixed**: `FrossDownloadMenu.cs` complete layout rewrite — was using wrong RectTransform anchor math causing black screen; new `Band()`/`BandBottom()`/`Stretch()` helpers produce correct layout
+- **New**: `SKILL.md` — Unity/Cecil/API reference for future sessions
 
 ### v2.0.0 — 2026-05-02
 - **New**: `FrossDownloadMenu.cs` — full in-game Rhythmverse search overlay (Unity C#)

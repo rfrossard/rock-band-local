@@ -26,7 +26,7 @@ fi
 echo "[ 1/3 ] Verificando Assembly-CSharp.dll..."
 
 DLL_RESTORED=0
-for bak in "$DLL.bak_dm" "$DLL.bak_original" "$DLL.bak"; do
+for bak in "$DLL.bak_fgb" "$DLL.bak_dm" "$DLL.bak_original" "$DLL.bak"; do
     if [ -f "$bak" ]; then
         echo "  Backup encontrado: $bak"
         cp "$bak" "$DLL"

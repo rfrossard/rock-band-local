@@ -68,16 +68,25 @@ audio engine, Rhythmverse client, full UI. Archived to `backup/python_rb_local/`
   3. Uses Mono.Cecil to patch `MainMenu.Credits()` → `FrossDownloadMenu.Show()`
   4. Re-signs `Assembly-CSharp.dll`
 
-### 🔲 Phase 4 — Test & iterate (NEXT)
+### ✅ Phase 4 — Fix & rewrite (done 2026-05-02)
+- Fixed `restore_yarg.command`: now includes `.bak_fgb` in DLL backup search → audio regression recoverable
+- **Complete rewrite of `FrossDownloadMenu.cs`** (~550 lines):
+  - New layout system: `Band()` / `BandBottom()` / `Stretch()` helpers with correct RectTransform math
+  - `Band(parent, name, color, topOffset, height)` → anchors at `(0,1)→(1,1)`, pivot top, anchoredPosition=(0,-topOffset)
+  - No more inverted rectangles — each row is independently sized and positioned
+  - Cleaner UI factory: `NewImg`, `NewTxt`, `NewBtn`, `NewInput`, `Rt(component)`
+  - Progress bar now driven by `anchorMax.x` (0→1) instead of fragile `rect.width` math
+  - Colors via `Hex(uint)` helper, dark YARG palette preserved
+
+### 🔲 Phase 5 — Test in-game (NEXT)
 | Task | Priority | Notes |
 |------|----------|-------|
-| Run `patch_fgb.command` and verify compilation | HIGH | Need dotnet SDK |
-| Test in-game: Menu → Download Music opens overlay | HIGH | |
-| Test Rhythmverse API calls from within YARG | HIGH | CORS / UnityWebRequest |
+| Run `restore_yarg.command` to fix audio first | HIGH | Restores .bak_fgb → original DLL |
+| Run `patch_fgb.command` to compile + patch | HIGH | Recompiles rewritten CS |
+| Test: Menu → Download Music opens overlay | HIGH | Verify layout is correct |
+| Test Rhythmverse API calls from within YARG | HIGH | Check UnityWebRequest + CORS |
 | Test ZIP download + extraction to songs/ | HIGH | |
 | Fix any runtime errors from in-game overlay | HIGH | |
-| Add pagination arrows to song list | MEDIUM | Already designed |
-| Add "Open in Browser" fallback button | MEDIUM | For unsupported formats (.7z) |
 | Add keyboard navigation (↑↓ in list) | MEDIUM | |
 | Test with PS5 controller (no mouse) | MEDIUM | |
 
@@ -116,9 +125,10 @@ To revert everything: `bash restore_yarg.command`
 
 | File | Purpose |
 |------|---------|
+| `SKILL.md` | **Read every session** — Unity DLL refs, layout rules, API, Cecil gotchas |
 | `FrossDownloadMenu.cs` | Unity C# — compile → DLL → inject into YARG |
 | `patch_fgb.command` | One-click: compile + patch YARG |
-| `restore_yarg.command` | One-click: revert all patches |
+| `restore_yarg.command` | One-click: revert all patches (includes .bak_fgb) |
 | `rebrand_yarg.command` | Apply Fross Garage Band name |
 | `patch_download_music.command` | Fallback: Credits.json catalog (no DLL) |
 | `Launch YARG.command` | Open Fross Garage Band |
@@ -151,13 +161,21 @@ gameformat values: all  chm  yarg  rb3  rb3xbox  wtde  tbrb  ps
 
 ## Session Notes
 
-### 2026-05-02
+### 2026-05-02 (session 1)
 - Pivoted from Python game to YARG as primary game (user decision)
 - Archived Python code to `backup/python_rb_local/`
 - Wrote `FrossDownloadMenu.cs` (~550 lines, full Unity UI + API)
 - Wrote `patch_fgb.command` (compile + Cecil patch)
 - Updated README to v2.0.0
-- **Next session**: Run `patch_fgb.command`, test in-game, fix runtime issues
+
+### 2026-05-02 (session 2)
+- patch_fgb.command compiled and patched successfully; overlay appeared in-game
+- Identified two bugs: (1) audio stopped, (2) layout completely black/broken
+- Root cause of audio: `restore_yarg.command` didn't include `.bak_fgb` → fixed
+- Root cause of layout: `SetRect(topBar, 0,1, 0,1, 0,-60, 0,0)` used wrong anchors
+  → element filled screen MINUS top 60px instead of a 60px bar
+- Complete rewrite of `FrossDownloadMenu.cs` with correct `Band()`/`BandBottom()` helpers
+- **Next session**: Run `restore_yarg.command` (audio fix), then `patch_fgb.command`, test in-game
 
 ---
 

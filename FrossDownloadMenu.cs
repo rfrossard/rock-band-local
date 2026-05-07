@@ -4,6 +4,11 @@
 //
 // Compile with patch_fgb.command → FrossDownloadMenu.dll → place in Managed/
 // Cecil patches MainMenu.Credits() to call FrossDownloadMenu.Show() instead.
+//
+// Layout uses two helpers:
+//   Band(parent, name, color, topOffset, height)       → full-width, top-anchored row
+//   BandBottom(parent, name, color, bottomOffset, h)   → full-width, bottom-anchored row
+//   Stretch(rt)                                         → fill parent entirely
 
 using System;
 using System.Collections;
@@ -16,48 +21,29 @@ using UnityEngine.UI;
 
 namespace FrossGarageBand
 {
-    // ─── Data types ───────────────────────────────────────────────────────────
+    // ─── Data model ───────────────────────────────────────────────────────────
 
-    [Serializable]
-    public class RvFile
-    {
-        public string file_id;
-        public string file_title;
-        public string file_artist;
-        public string file_album;
-        public string diff_guitar;
-        public string diff_bass;
-        public string diff_drums;
-        public string diff_vocals;
-        public string diff_keys;
-        public string download_url;
-        public string gameformat;
-        public string completeness;
-        public int downloads;
+    [Serializable] public class RvFile {
+        public string file_id, file_title, file_artist, file_album;
+        public int diff_guitar, diff_bass, diff_drums, diff_vocals, diff_keys, diff_band;
+        public string file_url_full, download_page_url_full, gameformat;
+        public int completeness, downloads;
     }
-
-    [Serializable]
-    public class RvSong    { public RvFile file; }
-    [Serializable]
-    public class RvRecords { public int total_filtered; }
-    [Serializable]
-    public class RvPagination { public int records; }
-    [Serializable]
-    public class RvData
-    {
-        public List<RvSong> songs = new List<RvSong>();
-        public RvRecords records = new RvRecords();
-        public RvPagination pagination = new RvPagination();
+    [Serializable] public class RvSong       { public RvFile file; }
+    [Serializable] public class RvRecords    { public int total_filtered; public int returned; }
+    [Serializable] public class RvPagination { public int records; }
+    [Serializable] public class RvData {
+        public List<RvSong>   songs      = new List<RvSong>();
+        public RvRecords      records    = new RvRecords();
+        public RvPagination   pagination = new RvPagination();
     }
-    [Serializable]
-    public class RvResponse { public string status; public RvData data = new RvData(); }
+    [Serializable] public class RvResponse { public string status; public RvData data = new RvData(); }
 
     // ─── Main component ───────────────────────────────────────────────────────
 
     public class FrossDownloadMenu : MonoBehaviour
     {
-        // ── Public entry point ────────────────────────────────────────────────
-
+        // ── Entry point ───────────────────────────────────────────────────────
         public static void Show()
         {
             var go = new GameObject("FrossDownloadMenu");
@@ -66,560 +52,728 @@ namespace FrossGarageBand
         }
 
         // ── Config ────────────────────────────────────────────────────────────
-
-        const string API_BASE = "https://rhythmverse.co/api";
-        const string API_REFERER = "https://rhythmverse.co/songfiles/game";
-        const int RECORDS_PER_PAGE = 20;
+        const string API_BASE  = "https://rhythmverse.co/api";
+        const int    PAGE_SIZE = 20;
 
         static readonly string[] FORMATS = { "all", "chm", "yarg", "rb3", "ps", "wtde" };
-        static readonly string[] FORMAT_LABELS = { "Todos", "CH", "YARG", "RB3", "PS", "WTDE" };
+        static readonly string[] LABELS  = { "Todos", "CH", "YARG", "RB3", "PS", "WTDE" };
 
-        // YARG dark palette
-        static readonly Color C_BG        = new Color(0.07f, 0.07f, 0.10f, 1f);
-        static readonly Color C_PANEL     = new Color(0.11f, 0.11f, 0.16f, 1f);
-        static readonly Color C_CARD      = new Color(0.14f, 0.14f, 0.20f, 1f);
-        static readonly Color C_CARD_SEL  = new Color(0.18f, 0.28f, 0.40f, 1f);
-        static readonly Color C_ACCENT    = new Color(0.30f, 0.80f, 0.45f, 1f);  // green
-        static readonly Color C_BTN       = new Color(0.20f, 0.20f, 0.28f, 1f);
-        static readonly Color C_BTN_HOV   = new Color(0.25f, 0.50f, 0.35f, 1f);
-        static readonly Color C_TEXT      = new Color(0.92f, 0.92f, 0.96f, 1f);
-        static readonly Color C_SUBTEXT   = new Color(0.55f, 0.55f, 0.65f, 1f);
-        static readonly Color C_RED       = new Color(0.85f, 0.25f, 0.25f, 1f);
+        // YARG-matched palette (sampled from Music Library screenshot)
+        static readonly Color C_BG       = Hex(0x07101C);  // main background
+        static readonly Color C_PANEL    = Hex(0x0D1B2B);  // right panel / top bar
+        static readonly Color C_CARD     = new Color(0,0,0,0);        // transparent row (unselected)
+        static readonly Color C_CARD_HOV = new Color(1,1,1,0.06f);    // hover tint
+        static readonly Color C_CARD_SEL = Hex(0x1478FF);             // selected row — full blue
+        static readonly Color C_ACCENT   = Hex(0x1478FF);             // accent blue
+        static readonly Color C_BTN      = Hex(0x142036);             // button background
+        static readonly Color C_TEXT     = Hex(0xFFFFFF);             // primary text — pure white
+        static readonly Color C_SUB      = Hex(0x7B8EA8);             // secondary text — gray-blue
+        static readonly Color C_GREEN2   = Hex(0x00DC3C);             // download button green
+        static readonly Color C_SEP      = new Color(1,1,1,0.06f);    // row separator
 
         // ── State ─────────────────────────────────────────────────────────────
-
-        string _query     = "";
-        string _format    = "all";
-        int    _page      = 1;
-        int    _totalPages = 1;
-
-        List<RvFile> _results = new List<RvFile>();
-        int _selectedIdx = -1;
-        bool _loading = false;
-
-        // Download state
-        bool   _downloading   = false;
-        float  _dlProgress    = 0f;
-        string _dlStatus      = "";
-        string _downloadedTitle = "";
+        string       _query  = "";
+        string       _format = "all";
+        int          _page   = 1;
+        int          _pages  = 1;
+        bool         _loading = false;
+        bool         _dlBusy  = false;
+        List<RvFile> _songs   = new List<RvFile>();
+        int          _selIdx  = -1;
 
         // ── UI refs ───────────────────────────────────────────────────────────
+        Transform        _listContent;
+        ScrollRect       _scrollRect;
+        Text             _statusTxt, _pageTxt;
+        Text             _detailTitle, _detailArtist, _detailMeta, _dlStatusTxt;
+        GameObject       _loadingCover;
+        Image            _dlBar;
+        Button           _dlBtn, _prevBtn, _nextBtn;
+        InputField       _searchInput;
+        List<Button>     _fmtBtns  = new List<Button>();
+        List<GameObject> _cards    = new List<GameObject>();
+        List<Image>      _borders  = new List<Image>();   // left-border strip per card
 
-        Transform _listContainer;
-        Text      _statusText;
-        Text      _pageText;
-        Text      _detailTitle;
-        Text      _detailArtist;
-        Text      _detailMeta;
-        Text      _dlStatusText;
-        GameObject _detailPanel;
-        GameObject _loadingOverlay;
-        Image     _dlProgressBar;
-        Button    _dlButton;
-        Button    _prevBtn;
-        Button    _nextBtn;
-        InputField _searchInput;
-        readonly List<Button> _fmtButtons = new List<Button>();
-        readonly List<GameObject> _cards   = new List<GameObject>();
+        // ── Lifecycle ─────────────────────────────────────────────────────────
+        void Awake() { BuildUI(); }
+        void Start()  { StartCoroutine(Fetch()); }
 
-        // ── Unity lifecycle ───────────────────────────────────────────────────
-
-        void Awake() => BuildUI();
-
-        void Start() => StartCoroutine(FetchResults());
-
-        // ─── UI construction ──────────────────────────────────────────────────
+        // ═══════════════════════════════════════════════════════════════════════
+        //  UI CONSTRUCTION
+        // ═══════════════════════════════════════════════════════════════════════
 
         void BuildUI()
         {
-            // Root canvas — renders above everything
+            // Canvas
             var cvGo = new GameObject("FGB_Canvas");
             cvGo.transform.SetParent(transform);
             var cv = cvGo.AddComponent<Canvas>();
             cv.renderMode = RenderMode.ScreenSpaceOverlay;
             cv.sortingOrder = 200;
-            cvGo.AddComponent<CanvasScaler>().uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            ((CanvasScaler)cvGo.GetComponent<CanvasScaler>()).referenceResolution = new Vector2(1920, 1080);
+            var sc = cvGo.AddComponent<CanvasScaler>();
+            sc.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            sc.referenceResolution = V2(1920, 1080);
             cvGo.AddComponent<GraphicRaycaster>();
 
-            // Full-screen background
-            var bg = MakeImage(cvGo.transform, "BG", C_BG);
-            FillParent(bg);
+            // Fullscreen background
+            var bgImg = NewImg(cvGo.transform, "BG", C_BG);
+            Stretch(Rt(bgImg));
+            var bg = bgImg.transform;
 
-            // ── Top bar ──────────────────────────────────────────────────────
-            var topBar = MakeImage(bg.transform, "TopBar", C_PANEL);
-            SetRect(topBar, 0, 1, 0, 1, 0, -60, 0, 0);
+            // ── TOP BAR — 64 px (matches YARG header height) ─────────────────
+            var topBar = Band(bg, "TopBar", C_PANEL, 0f, 64f);
 
-            MakeText(topBar.transform, "📥 Download Music — Rhythmverse",
-                     C_ACCENT, 22, TextAnchor.MiddleLeft, new Vector2(20, 0), new Vector2(800, 60));
+            // 3px accent line at very top — matches YARG's red header stripe
+            var topLine = NewImg(topBar, "TopLine", C_ACCENT);
+            Rt(topLine).anchorMin = V2(0,1); Rt(topLine).anchorMax = V2(1,1);
+            Rt(topLine).pivot = V2(.5f,1); Rt(topLine).anchoredPosition = V2(0,0); Rt(topLine).sizeDelta = V2(0,3);
 
-            var backBtn = MakeButton(topBar.transform, "← Voltar", C_BTN, C_TEXT, 16,
-                                     new Vector2(-10, 0), new Vector2(120, 40), TextAnchor.MiddleCenter,
-                                     pivot: new Vector2(1, 0.5f), anchorMin: new Vector2(1, 0.5f), anchorMax: new Vector2(1, 0.5f));
+            // "QUICKPLAY" small label above title (matches YARG layout)
+            var titleCap = NewTxt(topBar, "DOWNLOAD", C_ACCENT, 11, TextAnchor.LowerLeft);
+            Rt(titleCap).anchorMin = V2(0,0.5f); Rt(titleCap).anchorMax = V2(0.5f,1);
+            Rt(titleCap).offsetMin = V2(20,0); Rt(titleCap).offsetMax = V2(0,-4);
+
+            var titleT = NewTxt(topBar, "MUSIC LIBRARY", C_TEXT, 26, TextAnchor.UpperLeft);
+            Rt(titleT).anchorMin = V2(0,0); Rt(titleT).anchorMax = V2(0.5f,0.5f);
+            Rt(titleT).offsetMin = V2(20,4); Rt(titleT).offsetMax = V2(0,0);
+
+            var backBtn = NewBtn(topBar, "< VOLTAR", C_BTN, C_TEXT, 13);
+            Rt(backBtn).anchorMin = V2(1,.5f); Rt(backBtn).anchorMax = V2(1,.5f);
+            Rt(backBtn).pivot = V2(1,.5f);
+            Rt(backBtn).anchoredPosition = V2(-16, 0);
+            Rt(backBtn).sizeDelta = V2(120, 38);
             backBtn.onClick.AddListener(() => Destroy(gameObject));
 
-            // ── Search bar row ────────────────────────────────────────────────
-            var searchRow = MakeImage(bg.transform, "SearchRow", C_PANEL);
-            SetRect(searchRow, 0, 1, 1, 1, 0, -110, 0, -60);
+            // ── SEARCH ROW — 48 px ────────────────────────────────────────────
+            var searchRow = Band(bg, "SearchRow", C_BG, 64f, 48f);
 
-            _searchInput = MakeInputField(searchRow.transform, "Buscar artista, música...",
-                                          new Vector2(10, 10), new Vector2(-220, -10),
-                                          new Vector2(0, 0), new Vector2(1, 1));
-
-            var searchBtn = MakeButton(searchRow.transform, "🔍 Buscar", C_ACCENT, C_BG, 15,
-                                       new Vector2(-10, 10), new Vector2(200, -10),
-                                       TextAnchor.MiddleCenter,
-                                       pivot: new Vector2(1, 0), anchorMin: new Vector2(1, 0), anchorMax: new Vector2(1, 1));
-            searchBtn.onClick.AddListener(OnSearch);
+            // Search box with rounded feel (darker fill, matches YARG search)
+            _searchInput = NewInput(searchRow, "🔍  Buscar artista, música...");
+            Rt(_searchInput).anchorMin = V2(0,0); Rt(_searchInput).anchorMax = V2(1,1);
+            Rt(_searchInput).offsetMin = V2(16,8); Rt(_searchInput).offsetMax = V2(-130,-8);
             _searchInput.onEndEdit.AddListener(s => { if (Input.GetKeyDown(KeyCode.Return)) OnSearch(); });
 
-            // ── Format filter row ─────────────────────────────────────────────
-            var fmtRow = MakeImage(bg.transform, "FmtRow", new Color(0.09f, 0.09f, 0.13f, 1f));
-            SetRect(fmtRow, 0, 1, 1, 1, 0, -150, 0, -110);
+            var srchBtn = NewBtn(searchRow, "BUSCAR", C_ACCENT, C_TEXT, 14);
+            Rt(srchBtn).anchorMin = V2(1,0); Rt(srchBtn).anchorMax = V2(1,1);
+            Rt(srchBtn).pivot = V2(1,.5f);
+            Rt(srchBtn).anchoredPosition = V2(-12,0);
+            Rt(srchBtn).sizeDelta = V2(110, 0);
+            Rt(srchBtn).offsetMin += V2(0, 8); Rt(srchBtn).offsetMax -= V2(0, 8);
+            srchBtn.onClick.AddListener(OnSearch);
 
-            float btnW = 90; float btnH = 30; float startX = 10;
+            // ── FORMAT ROW — 38 px (filter pills like YARG's TRACK/ARTIST/etc) ──
+            var fmtRow = Band(bg, "FmtRow", C_BG, 112f, 38f);
+
+            // Thin separator below search
+            var fmtSep = NewImg(fmtRow, "Sep", C_SEP);
+            Rt(fmtSep).anchorMin = V2(0,1); Rt(fmtSep).anchorMax = V2(1,1);
+            Rt(fmtSep).pivot = V2(0.5f,1); Rt(fmtSep).anchoredPosition = V2(0,0); Rt(fmtSep).sizeDelta = V2(0,1);
+
             for (int i = 0; i < FORMATS.Length; i++)
             {
                 int idx = i;
-                var color = FORMATS[i] == _format ? C_ACCENT : C_BTN;
-                var tcolor = FORMATS[i] == _format ? C_BG : C_TEXT;
-                var fb = MakeButton(fmtRow.transform, FORMAT_LABELS[i], color, tcolor, 13,
-                                    new Vector2(startX + i * (btnW + 6), 8),
-                                    new Vector2(btnW, btnH),
-                                    TextAnchor.MiddleCenter,
-                                    pivot: new Vector2(0, 0), anchorMin: Vector2.zero, anchorMax: Vector2.zero);
-                _fmtButtons.Add(fb);
+                bool sel = FORMATS[i] == _format;
+                var fb = NewBtn(fmtRow, LABELS[i], sel ? C_ACCENT : new Color(0,0,0,0), sel ? C_TEXT : C_SUB, 12);
+                Rt(fb).anchorMin = V2(0,.5f); Rt(fb).anchorMax = V2(0,.5f);
+                Rt(fb).pivot = V2(0,.5f);
+                Rt(fb).anchoredPosition = V2(16 + i * 80f, 0);
+                Rt(fb).sizeDelta = V2(74, 26);
+                _fmtBtns.Add(fb);
                 fb.onClick.AddListener(() => OnFormatSelect(idx));
             }
 
-            // ── Status / count ────────────────────────────────────────────────
-            var statusRow = MakeImage(bg.transform, "StatusRow", new Color(0.08f, 0.08f, 0.11f, 1f));
-            SetRect(statusRow, 0, 1, 1, 1, 0, -175, 0, -150);
-            _statusText = MakeText(statusRow.transform, "Carregando...", C_SUBTEXT, 13,
-                                   TextAnchor.MiddleLeft, new Vector2(12, 0), new Vector2(900, 25));
+            // ── STATUS ROW — 32 px ───────────────────────────────────────────
+            var statusRow = Band(bg, "StatusRow", C_BG, 150f, 32f);
 
-            // ── Main content area ─────────────────────────────────────────────
-            // Left: song list  Right: detail panel
-            var contentArea = MakeImage(bg.transform, "Content", new Color(0, 0, 0, 0));
-            SetRect(contentArea, 0, 1, 0, 1, 0, -30, 0, -175);
+            _statusTxt = NewTxt(statusRow, "Carregando...", C_SUB, 12, TextAnchor.MiddleLeft);
+            Rt(_statusTxt).anchorMin = V2(0,0); Rt(_statusTxt).anchorMax = V2(1,1);
+            Rt(_statusTxt).offsetMin = V2(16,0); Rt(_statusTxt).offsetMax = V2(-12,0);
 
-            // Song list (left 60%)
-            var listPanel = MakeImage(contentArea.transform, "ListPanel", C_BG);
-            SetRect(listPanel, 0, 0.60f, 0, 1, 0, 0, 0, 0);
+            // Thin line under status row (YARG has a subtle divider here)
+            var statusSep = NewImg(statusRow, "Sep", C_SEP);
+            Rt(statusSep).anchorMin = V2(0,0); Rt(statusSep).anchorMax = V2(1,0);
+            Rt(statusSep).pivot = V2(0.5f,0); Rt(statusSep).anchoredPosition = V2(0,0); Rt(statusSep).sizeDelta = V2(0,1);
 
-            var scroll = MakeScrollRect(listPanel.transform, out _listContainer);
+            // ── PAGINATION ROW — 36 px at bottom ─────────────────────────────
+            var pageRow = BandBottom(bg, "PageRow", C_PANEL, 0f, 36f);
 
-            // Detail panel (right 40%)
-            _detailPanel = MakeImage(contentArea.transform, "DetailPanel", C_PANEL).gameObject;
-            SetRect(_detailPanel.transform as RectTransform, 0.60f, 1, 0, 1, 4, 0, 0, 0);
+            // Top separator on page row
+            var pageSep = NewImg(pageRow, "Sep", C_SEP);
+            Rt(pageSep).anchorMin = V2(0,1); Rt(pageSep).anchorMax = V2(1,1);
+            Rt(pageSep).pivot = V2(0.5f,1); Rt(pageSep).anchoredPosition = V2(0,0); Rt(pageSep).sizeDelta = V2(0,1);
 
-            BuildDetailPanel(_detailPanel.transform);
-
-            // ── Pagination row ────────────────────────────────────────────────
-            var pageRow = MakeImage(bg.transform, "PageRow", C_PANEL);
-            SetRect(pageRow, 0, 1, 0, 0, 0, 30, 0, 0);
-
-            _prevBtn = MakeButton(pageRow.transform, "◀ Anterior", C_BTN, C_TEXT, 14,
-                                  new Vector2(10, 4), new Vector2(130, 22),
-                                  TextAnchor.MiddleCenter,
-                                  pivot: Vector2.zero, anchorMin: Vector2.zero, anchorMax: new Vector2(0, 1));
+            _prevBtn = NewBtn(pageRow, "◀ Anterior", C_BTN, C_TEXT, 12);
+            Rt(_prevBtn).anchorMin = V2(0,0); Rt(_prevBtn).anchorMax = V2(0,1);
+            Rt(_prevBtn).pivot = V2(0,.5f);
+            Rt(_prevBtn).anchoredPosition = V2(12,0); Rt(_prevBtn).sizeDelta = V2(110,0);
+            Rt(_prevBtn).offsetMin += V2(0,6); Rt(_prevBtn).offsetMax -= V2(0,6);
             _prevBtn.onClick.AddListener(OnPrev);
 
-            _pageText = MakeText(pageRow.transform, "Página 1 / 1", C_SUBTEXT, 13,
-                                 TextAnchor.MiddleCenter, new Vector2(0, 0), new Vector2(200, 30));
-            // center it
-            var ptRect = _pageText.GetComponent<RectTransform>();
-            ptRect.anchorMin = new Vector2(0.5f, 0); ptRect.anchorMax = new Vector2(0.5f, 1);
-            ptRect.pivot = new Vector2(0.5f, 0.5f);
-            ptRect.anchoredPosition = Vector2.zero;
-            ptRect.sizeDelta = new Vector2(200, 0);
+            _pageTxt = NewTxt(pageRow, "Página 1 / 1", C_SUB, 12, TextAnchor.MiddleCenter);
+            Rt(_pageTxt).anchorMin = V2(.5f,0); Rt(_pageTxt).anchorMax = V2(.5f,1);
+            Rt(_pageTxt).pivot = V2(.5f,.5f);
+            Rt(_pageTxt).anchoredPosition = V2(0,0); Rt(_pageTxt).sizeDelta = V2(200,0);
 
-            _nextBtn = MakeButton(pageRow.transform, "Próxima ▶", C_BTN, C_TEXT, 14,
-                                  new Vector2(-10, 4), new Vector2(130, 22),
-                                  TextAnchor.MiddleCenter,
-                                  pivot: new Vector2(1, 0), anchorMin: new Vector2(1, 0), anchorMax: Vector2.one);
+            _nextBtn = NewBtn(pageRow, "Próxima ▶", C_BTN, C_TEXT, 12);
+            Rt(_nextBtn).anchorMin = V2(1,0); Rt(_nextBtn).anchorMax = V2(1,1);
+            Rt(_nextBtn).pivot = V2(1,.5f);
+            Rt(_nextBtn).anchoredPosition = V2(-12,0); Rt(_nextBtn).sizeDelta = V2(110,0);
+            Rt(_nextBtn).offsetMin += V2(0,6); Rt(_nextBtn).offsetMax -= V2(0,6);
             _nextBtn.onClick.AddListener(OnNext);
 
-            // ── Loading overlay ───────────────────────────────────────────────
-            _loadingOverlay = MakeImage(bg.transform, "Loading", new Color(0, 0, 0, 0.6f)).gameObject;
-            FillParent(_loadingOverlay.GetComponent<RectTransform>());
-            MakeText(_loadingOverlay.transform, "Carregando...", C_ACCENT, 24,
-                     TextAnchor.MiddleCenter, Vector2.zero, new Vector2(400, 60),
-                     anchor: new Vector2(0.5f, 0.5f));
-            _loadingOverlay.SetActive(false);
+            // ── CONTENT AREA — fills between status and pagination ────────────
+            // top = 64(bar)+48(search)+38(fmt)+32(status) = 182px, bottom = 36(page)
+            var contentImg = NewImg(bg, "Content", new Color(0,0,0,0));
+            Rt(contentImg).anchorMin = V2(0,0); Rt(contentImg).anchorMax = V2(1,1);
+            Rt(contentImg).offsetMin = V2(0,36); Rt(contentImg).offsetMax = V2(0,-182);
+            var content = contentImg.transform;
+
+            // Left: song list (65% — matches YARG list proportion)
+            var listImg = NewImg(content, "List", C_BG);
+            Rt(listImg).anchorMin = V2(0,0); Rt(listImg).anchorMax = V2(.65f,1);
+            Rt(listImg).offsetMin = V2(0,0); Rt(listImg).offsetMax = V2(0,0);
+            BuildScrollList(listImg.transform);
+
+            // Right: detail panel (35% — matches YARG right panel)
+            var detailImg = NewImg(content, "Detail", C_PANEL);
+            Rt(detailImg).anchorMin = V2(.65f,0); Rt(detailImg).anchorMax = V2(1,1);
+            Rt(detailImg).offsetMin = V2(1,0); Rt(detailImg).offsetMax = V2(0,0);
+            BuildDetailPanel(detailImg.transform);
+
+            // Vertical separator between list and detail
+            var vsep = NewImg(content, "VSep", C_SEP);
+            Rt(vsep).anchorMin = V2(.65f,0); Rt(vsep).anchorMax = V2(.65f,1);
+            Rt(vsep).pivot = V2(0,.5f); Rt(vsep).anchoredPosition = V2(0,0); Rt(vsep).sizeDelta = V2(1,0);
+
+            // ── LOADING COVER ─────────────────────────────────────────────────
+            var lcImg = NewImg(bg, "LoadCover", new Color(0,0,0,.8f));
+            Stretch(Rt(lcImg));
+            var lcTxt = NewTxt(lcImg.transform, "Carregando...", C_ACCENT, 30, TextAnchor.MiddleCenter);
+            Rt(lcTxt).anchorMin = V2(.5f,.5f); Rt(lcTxt).anchorMax = V2(.5f,.5f);
+            Rt(lcTxt).pivot = V2(.5f,.5f);
+            Rt(lcTxt).anchoredPosition = V2(0,0); Rt(lcTxt).sizeDelta = V2(400,60);
+            _loadingCover = lcImg.gameObject;
+            _loadingCover.SetActive(false);
         }
 
-        void BuildDetailPanel(Transform parent)
+        void BuildScrollList(Transform parent)
         {
-            // Title
-            _detailTitle = MakeText(parent, "Selecione uma música", C_TEXT, 18,
-                                    TextAnchor.UpperLeft,
-                                    new Vector2(14, -12), new Vector2(-14, -12),
-                                    anchor: new Vector2(0, 1), anchorMax: new Vector2(1, 1));
-            _detailTitle.GetComponent<RectTransform>().sizeDelta = new Vector2(-28, 80);
+            // scrollGo  — ScrollRect + thin Image (needs graphic to receive scroll-wheel)
+            //   vpGo    — RectMask2D clips children (no alpha/stencil issues)
+            //     ctGo  — Content: cards stacked top-to-bottom
+            var scrollGo = new GameObject("Scroll");
+            scrollGo.transform.SetParent(parent, false);
+            var scrollImg = scrollGo.AddComponent<Image>();
+            scrollImg.color = new Color(0,0,0,0.004f);   // just enough to receive events
+            Stretch((RectTransform)scrollGo.transform);
 
-            _detailArtist = MakeText(parent, "", C_SUBTEXT, 14,
-                                     TextAnchor.UpperLeft,
-                                     new Vector2(14, -96), new Vector2(-14, -96),
-                                     anchor: new Vector2(0, 1), anchorMax: new Vector2(1, 1));
-            _detailArtist.GetComponent<RectTransform>().sizeDelta = new Vector2(-28, 40);
+            // RectMask2D clips by geometry — never has alpha/stencil issues
+            var vpGo = new GameObject("Viewport");
+            vpGo.transform.SetParent(scrollGo.transform, false);
+            vpGo.AddComponent<RectMask2D>();
+            var vpRt = (RectTransform)vpGo.transform;
+            Stretch(vpRt);
 
-            _detailMeta = MakeText(parent, "", new Color(0.65f, 0.75f, 0.65f, 1f), 13,
-                                   TextAnchor.UpperLeft,
-                                   new Vector2(14, -140), new Vector2(-14, -140),
-                                   anchor: new Vector2(0, 1), anchorMax: new Vector2(1, 1));
-            _detailMeta.GetComponent<RectTransform>().sizeDelta = new Vector2(-28, 200);
+            var ctGo = new GameObject("Content");
+            ctGo.transform.SetParent(vpGo.transform, false);
+            var ctR = ctGo.AddComponent<RectTransform>();
+            ctR.anchorMin     = V2(0, 1);
+            ctR.anchorMax     = V2(1, 1);
+            ctR.pivot         = V2(0, 1);
+            ctR.anchoredPosition = V2(0, 0);
+            ctR.sizeDelta     = V2(0, 0);
 
-            // Download button
-            _dlButton = MakeButton(parent, "⬇  Baixar Música", C_ACCENT, C_BG, 16,
-                                   new Vector2(14, 110), new Vector2(-14, 58),
-                                   TextAnchor.MiddleCenter,
-                                   pivot: new Vector2(0, 0), anchorMin: Vector2.zero, anchorMax: new Vector2(1, 0));
-            _dlButton.onClick.AddListener(OnDownload);
-            _dlButton.gameObject.SetActive(false);
+            _scrollRect = scrollGo.AddComponent<ScrollRect>();
+            _scrollRect.viewport        = vpRt;
+            _scrollRect.content         = ctR;
+            _scrollRect.horizontal      = false;
+            _scrollRect.scrollSensitivity = 40;
+            _scrollRect.movementType    = ScrollRect.MovementType.Clamped;
+            _scrollRect.inertia         = false;
 
-            // Progress bar background
-            var barBg = MakeImage(parent, "BarBg", C_BTN);
-            SetRect(barBg, 0, 1, 0, 0, 14, 58, -14, 40);
-
-            // Progress bar fill
-            var barFill = MakeImage(barBg.transform, "BarFill", C_ACCENT);
-            var fillRect = barFill.GetComponent<RectTransform>();
-            fillRect.anchorMin = Vector2.zero; fillRect.anchorMax = new Vector2(0, 1);
-            fillRect.pivot = Vector2.zero; fillRect.sizeDelta = new Vector2(0, 0);
-            fillRect.anchoredPosition = Vector2.zero;
-            _dlProgressBar = barFill;
-
-            // Download status text
-            _dlStatusText = MakeText(parent, "", C_SUBTEXT, 12, TextAnchor.MiddleCenter,
-                                     new Vector2(14, 26), new Vector2(-14, 14),
-                                     anchor: Vector2.zero, anchorMax: new Vector2(1, 0));
-            _dlStatusText.GetComponent<RectTransform>().sizeDelta = new Vector2(-28, 26);
+            _listContent = ctGo.transform;
         }
 
-        // ─── Event handlers ───────────────────────────────────────────────────
+        void BuildDetailPanel(Transform p)
+        {
+            // ── DOWNLOAD button — full width at top, like YARG's "PLAY SONG" ─
+            _dlBtn = NewBtn(p, "⬇  BAIXAR MÚSICA", C_GREEN2, C_BG, 18);
+            Rt(_dlBtn).anchorMin = V2(0,1); Rt(_dlBtn).anchorMax = V2(1,1);
+            Rt(_dlBtn).pivot = V2(.5f,1);
+            Rt(_dlBtn).anchoredPosition = V2(0,-16);
+            Rt(_dlBtn).sizeDelta = V2(-32, 56);
+            _dlBtn.onClick.AddListener(OnDownload);
+            _dlBtn.gameObject.SetActive(false);
+
+            // ── Song title — big, white, below button ──────────────────────
+            _detailTitle = NewTxt(p, "Selecione uma\nmúsica na lista", C_TEXT, 22, TextAnchor.UpperLeft);
+            PinTop(_detailTitle, 92f, 72f);
+
+            // ── Artist — gray, below title ─────────────────────────────────
+            _detailArtist = NewTxt(p, "", C_SUB, 15, TextAnchor.UpperLeft);
+            PinTop(_detailArtist, 170f, 26f);
+
+            // ── Thin separator ─────────────────────────────────────────────
+            var sep2 = NewImg(p, "Sep", C_SEP);
+            PinTop(sep2, 204f, 1f);
+
+            // ── Metadata key/value rows (YARG style) ─────────────────────
+            _detailMeta = NewTxt(p, "", C_SUB, 13, TextAnchor.UpperLeft);
+            PinTop(_detailMeta, 212f, 300f);
+
+            // ── Status label — at bottom ───────────────────────────────────
+            _dlStatusTxt = NewTxt(p, "", C_GREEN2, 12, TextAnchor.LowerLeft);
+            Rt(_dlStatusTxt).anchorMin = V2(0,0); Rt(_dlStatusTxt).anchorMax = V2(1,0);
+            Rt(_dlStatusTxt).pivot = V2(0,0);
+            Rt(_dlStatusTxt).anchoredPosition = V2(16, 16);
+            Rt(_dlStatusTxt).sizeDelta = V2(-32, 60);
+
+            // ── Progress bar — thin, just above status ─────────────────────
+            var barBg = NewImg(p, "BarBg", C_BTN);
+            Rt(barBg).anchorMin = V2(0,0); Rt(barBg).anchorMax = V2(1,0);
+            Rt(barBg).pivot = V2(.5f,0);
+            Rt(barBg).anchoredPosition = V2(0, 10);
+            Rt(barBg).sizeDelta = V2(-32, 4);
+            _dlBar = NewImg(barBg.transform, "Fill", C_GREEN2);
+            Rt(_dlBar).anchorMin = V2(0,0); Rt(_dlBar).anchorMax = V2(0,1);
+            Rt(_dlBar).pivot = V2(0,0);
+            Rt(_dlBar).offsetMin = V2(0,0); Rt(_dlBar).offsetMax = V2(0,0);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        //  EVENT HANDLERS
+        // ═══════════════════════════════════════════════════════════════════════
 
         void OnSearch()
         {
             _query = _searchInput.text.Trim();
-            _page = 1;
-            StartCoroutine(FetchResults());
+            _page  = 1;
+            StartCoroutine(Fetch());
         }
 
         void OnFormatSelect(int idx)
         {
             _format = FORMATS[idx];
-            for (int i = 0; i < _fmtButtons.Count; i++)
+            for (int i = 0; i < _fmtBtns.Count; i++)
             {
-                var img = _fmtButtons[i].GetComponent<Image>();
-                var txt = _fmtButtons[i].GetComponentInChildren<Text>();
                 bool sel = i == idx;
-                img.color = sel ? C_ACCENT : C_BTN;
-                txt.color = sel ? C_BG : C_TEXT;
+                var img = _fmtBtns[i].GetComponent<Image>();
+                var txt = _fmtBtns[i].GetComponentInChildren<Text>();
+                img.color = sel ? C_ACCENT : new Color(0,0,0,0);
+                txt.color = sel ? C_TEXT   : C_SUB;
+                var cb = _fmtBtns[i].colors;
+                cb.normalColor      = img.color;
+                cb.highlightedColor = sel ? Brighten(C_ACCENT, 1.15f) : new Color(1,1,1,0.08f);
+                _fmtBtns[i].colors = cb;
             }
             _page = 1;
-            StartCoroutine(FetchResults());
+            StartCoroutine(Fetch());
         }
 
-        void OnPrev() { if (_page > 1) { _page--; StartCoroutine(FetchResults()); } }
-        void OnNext() { if (_page < _totalPages) { _page++; StartCoroutine(FetchResults()); } }
+        void OnPrev() { if (_page > 1)      { _page--; StartCoroutine(Fetch()); } }
+        void OnNext() { if (_page < _pages) { _page++; StartCoroutine(Fetch()); } }
 
-        void OnSelectSong(int idx)
+        void OnSelect(int idx)
         {
-            _selectedIdx = idx;
-            UpdateCards();
-            if (idx < 0 || idx >= _results.Count) return;
-            var f = _results[idx];
-            _detailTitle.text = f.file_title ?? "—";
+            _selIdx = idx;
+            for (int i = 0; i < _cards.Count; i++)
+            {
+                bool sel = i == _selIdx;
+                var img = _cards[i].GetComponent<Image>();
+                if (img) img.color = sel ? C_CARD_SEL : C_CARD;
+                // Update text colors: white always (readable on both blue and transparent)
+            }
+            if (idx < 0 || idx >= _songs.Count)
+            {
+                _dlBtn.gameObject.SetActive(false);
+                return;
+            }
+            var f = _songs[idx];
+            _detailTitle.text  = f.file_title  ?? "—";
             _detailArtist.text = f.file_artist ?? "";
-            string meta = BuildMeta(f);
-            _detailMeta.text = meta;
-            _dlButton.gameObject.SetActive(!_downloading && !string.IsNullOrEmpty(f.download_url));
+            _detailMeta.text   = BuildMeta(f);
+            string dlUrl = !string.IsNullOrEmpty(f.file_url_full) ? f.file_url_full
+                         : !string.IsNullOrEmpty(f.download_page_url_full) ? f.download_page_url_full : "";
+            _dlBtn.gameObject.SetActive(!string.IsNullOrEmpty(dlUrl));
         }
 
         void OnDownload()
         {
-            if (_selectedIdx < 0 || _selectedIdx >= _results.Count) return;
-            var f = _results[_selectedIdx];
-            if (string.IsNullOrEmpty(f.download_url)) return;
-            StartCoroutine(DownloadSong(f));
+            if (_selIdx < 0 || _selIdx >= _songs.Count) return;
+            var f = _songs[_selIdx];
+            // Rhythmverse requires browser cookies for actual downloads.
+            // Open the download page in the system browser — simplest, most reliable approach.
+            string url = !string.IsNullOrEmpty(f.download_page_url_full) ? f.download_page_url_full
+                       : !string.IsNullOrEmpty(f.file_url_full) ? f.file_url_full : "";
+            if (string.IsNullOrEmpty(url)) return;
+            if (!url.StartsWith("http")) url = "https://rhythmverse.co" + url;
+            Application.OpenURL(url);
+            SetDl($"Abrindo no navegador: {f.file_title}");
+            SetBar(1f);
         }
 
-        // ─── API coroutines ───────────────────────────────────────────────────
+        // ═══════════════════════════════════════════════════════════════════════
+        //  API
+        // ═══════════════════════════════════════════════════════════════════════
 
-        IEnumerator FetchResults()
+        IEnumerator Fetch()
         {
             if (_loading) yield break;
             _loading = true;
             SetLoading(true);
-            _statusText.text = "Buscando...";
+            _statusTxt.text = "Buscando...";
 
-            string endpoint, fmt = _format == "all" ? "all" : _format;
-            WWWForm form = new WWWForm();
-            form.AddField("data_type", "full");
-            form.AddField("page", _page.ToString());
-            form.AddField("records", RECORDS_PER_PAGE.ToString());
-
+            string url, body;
             if (!string.IsNullOrEmpty(_query))
             {
-                endpoint = $"{API_BASE}/{fmt}/songfiles/search/live";
-                form.AddField("text", _query);
+                url  = $"{API_BASE}/{_format}/songfiles/search/live";
+                body = $"data_type=full&text={Uri.EscapeDataString(_query)}&page={_page}&records={PAGE_SIZE}";
             }
             else
             {
-                endpoint = $"{API_BASE}/{fmt}/songfiles/list";
-                form.AddField("sort[0][sort_by]", "update_date");
-                form.AddField("sort[0][sort_order]", "DESC");
+                url  = $"{API_BASE}/{_format}/songfiles/list";
+                body = $"data_type=full&page={_page}&records={PAGE_SIZE}" +
+                       "&sort%5B0%5D%5Bsort_by%5D=update_date&sort%5B0%5D%5Bsort_order%5D=DESC";
             }
 
-            using (var req = UnityWebRequest.Post(endpoint, form))
+            byte[] raw = Encoding.UTF8.GetBytes(body);
+            using (var req = new UnityWebRequest(url, "POST"))
             {
+                req.uploadHandler   = new UploadHandlerRaw(raw);
+                req.downloadHandler = new DownloadHandlerBuffer();
+                req.SetRequestHeader("Content-Type",     "application/x-www-form-urlencoded");
                 req.SetRequestHeader("X-Requested-With", "XMLHttpRequest");
-                req.SetRequestHeader("Referer", "https://rhythmverse.co/songfiles/game");
-                req.SetRequestHeader("Origin", "https://rhythmverse.co");
+                req.SetRequestHeader("Referer",          "https://rhythmverse.co/songfiles/game");
+                req.SetRequestHeader("Origin",           "https://rhythmverse.co");
                 yield return req.SendWebRequest();
 
                 if (req.result != UnityWebRequest.Result.Success)
-                {
-                    _statusText.text = $"Erro: {req.error}";
-                }
+                    _statusTxt.text = $"[ERRO HTTP {(int)req.responseCode}] {req.error}";
                 else
-                {
-                    ParseAndDisplay(req.downloadHandler.text);
-                }
+                    ParseResponse(req.downloadHandler.text, url, (int)req.responseCode);
             }
 
             _loading = false;
             SetLoading(false);
         }
 
-        void ParseAndDisplay(string json)
+        void ParseResponse(string json, string reqUrl = "", int httpCode = 200)
         {
             try
             {
-                // Unity's JsonUtility doesn't handle nested nulls well — minimal manual parse
-                var resp = JsonUtility.FromJson<RvResponse>(json);
-                if (resp == null || resp.data == null)
-                { _statusText.text = "Resposta inesperada da API."; return; }
+                if (string.IsNullOrEmpty(json))
+                {
+                    _statusTxt.text = $"[ERRO] Resposta vazia (HTTP {httpCode})";
+                    return;
+                }
 
-                _results = new List<RvFile>();
-                if (resp.data.songs != null)
-                    foreach (var s in resp.data.songs)
-                        if (s?.file != null) _results.Add(s.file);
+                // JsonUtility fails to deserialize the songs List<> from Rhythmverse's
+                // complex JSON (deeply-nested author/difficulties objects confuse Mono's
+                // JsonUtility).  Use a manual parser for songs; JsonUtility only for
+                // the small records/pagination numbers.
+                _songs.Clear();
+                _songs.AddRange(ExtractSongs(json));
 
-                int total = resp.data.records?.total_filtered ?? _results.Count;
-                int perPage = resp.data.pagination?.records;
-                if (perPage <= 0) perPage = RECORDS_PER_PAGE;
-                _totalPages = Mathf.Max(1, Mathf.CeilToInt((float)total / perPage));
+                int totalFiltered = JsonFindInt(json, "total_filtered");
+                int returned      = JsonFindInt(json, "returned");
+                int total = totalFiltered > 0 ? totalFiltered
+                          : returned      > 0 ? returned
+                          : _songs.Count;
 
-                _statusText.text = total == 0
-                    ? "Nenhuma música encontrada."
-                    : $"{total} música(s) encontrada(s)  •  Página {_page}/{_totalPages}";
-                _pageText.text = $"Página {_page} / {_totalPages}";
+                // pagination.records is a quoted string "20" in the API
+                int perPgIdx = json.IndexOf("\"pagination\"", StringComparison.Ordinal);
+                int perPg    = JsonFindInt(json, "records", perPgIdx > 0 ? perPgIdx : 0);
+                if (perPg <= 0) perPg = PAGE_SIZE;
+                _pages = Mathf.Max(1, Mathf.CeilToInt((float)total / perPg));
+
+                if (_songs.Count == 0)
+                    _statusTxt.text = $"Nenhum resultado  (total_f={totalFiltered} ret={returned})";
+                else
+                    _statusTxt.text = $"{total:N0} musicas  •  Pagina {_page}/{_pages}";
+
+                _pageTxt.text = $"Pagina {_page} / {_pages}";
                 _prevBtn.interactable = _page > 1;
-                _nextBtn.interactable = _page < _totalPages;
+                _nextBtn.interactable = _page < _pages;
 
-                RebuildList();
+                RebuildCards();
             }
             catch (Exception ex)
             {
-                _statusText.text = $"Erro ao processar: {ex.Message}";
-                Debug.LogError($"[FGB] Parse error: {ex}");
+                _statusTxt.text = $"[ERRO parse] {ex.Message}";
+                Debug.LogError($"[FGB] ParseResponse: {ex}");
             }
         }
 
-        // ─── List rendering ───────────────────────────────────────────────────
+        // ─── Manual JSON helpers ───────────────────────────────────────────────
+        // JsonUtility doesn't handle Rhythmverse's complex songs array reliably.
+        // These helpers extract only the fields we need.
 
-        void RebuildList()
+        // Returns the string/number value of "key": ... in json starting at startAt.
+        static string JsonFind(string json, string key, int startAt = 0)
+        {
+            string search = "\"" + key + "\":";
+            int ki = json.IndexOf(search, startAt, StringComparison.Ordinal);
+            if (ki < 0) return null;
+            int vi = ki + search.Length;
+            while (vi < json.Length && (json[vi] == ' ' || json[vi] == '\n' || json[vi] == '\r')) vi++;
+            if (vi >= json.Length) return null;
+            char first = json[vi];
+            if (first == '"')
+            {
+                vi++;
+                int end = vi;
+                while (end < json.Length)
+                {
+                    if (json[end] == '\\') { end += 2; continue; }
+                    if (json[end] == '"') break;
+                    end++;
+                }
+                return end >= json.Length ? null : json.Substring(vi, end - vi);
+            }
+            if (first == 'n') return null; // null literal
+            // number or bool — read until delimiter
+            int endN = vi;
+            while (endN < json.Length && ",}] \n\r\t".IndexOf(json[endN]) < 0) endN++;
+            return json.Substring(vi, endN - vi);
+        }
+
+        static int JsonFindInt(string json, string key, int startAt = 0)
+        {
+            string s = JsonFind(json, key, startAt);
+            if (s == null) return 0;
+            s = s.Trim('"');
+            int v; return int.TryParse(s, out v) ? v : 0;
+        }
+
+        // Extracts all "file":{...} blocks from the songs array and returns RvFile list.
+        static List<RvFile> ExtractSongs(string json)
+        {
+            var result = new List<RvFile>();
+            int songsIdx = json.IndexOf("\"songs\":[", StringComparison.Ordinal);
+            if (songsIdx < 0) return result;
+            int pos = songsIdx + 9;
+
+            while (pos < json.Length)
+            {
+                int fileIdx = json.IndexOf("\"file\":{", pos, StringComparison.Ordinal);
+                if (fileIdx < 0) break;
+
+                // Also stop if we've passed the songs array closing ]
+                int closeBracket = json.IndexOf(']', pos);
+                if (closeBracket >= 0 && closeBracket < fileIdx) break;
+
+                // Walk the brace depth to find the end of the file object
+                int blockStart = fileIdx + 7; // points to '{'
+                int depth = 0;
+                int i = blockStart;
+                while (i < json.Length)
+                {
+                    char c = json[i];
+                    if (c == '"') // skip string contents
+                    {
+                        i++;
+                        while (i < json.Length)
+                        {
+                            if (json[i] == '\\') { i += 2; continue; }
+                            if (json[i] == '"') break;
+                            i++;
+                        }
+                    }
+                    else if (c == '{') depth++;
+                    else if (c == '}') { depth--; if (depth == 0) { i++; break; } }
+                    i++;
+                }
+                string fileJson = json.Substring(blockStart, i - blockStart);
+                var f = ParseRvFile(fileJson);
+                if (f != null && !string.IsNullOrEmpty(f.file_title)) result.Add(f);
+                pos = i;
+            }
+            return result;
+        }
+
+        static RvFile ParseRvFile(string j)
+        {
+            var f = new RvFile();
+            f.file_id                = JsonFind(j, "file_id")    ?? "";
+            f.file_title             = JsonFind(j, "file_title")  ?? "";
+            f.file_artist            = JsonFind(j, "file_artist") ?? "";
+            f.file_album             = JsonFind(j, "file_album")  ?? "";
+            f.gameformat             = JsonFind(j, "gameformat")  ?? "";
+            f.file_url_full          = JsonFind(j, "file_url_full")          ?? "";
+            f.download_page_url_full = JsonFind(j, "download_page_url_full") ?? "";
+            f.diff_guitar  = JsonFindInt(j, "diff_guitar");
+            f.diff_bass    = JsonFindInt(j, "diff_bass");
+            f.diff_drums   = JsonFindInt(j, "diff_drums");
+            f.diff_vocals  = JsonFindInt(j, "diff_vocals");
+            f.diff_keys    = JsonFindInt(j, "diff_keys");
+            f.diff_band    = JsonFindInt(j, "diff_band");
+            f.completeness = JsonFindInt(j, "completeness");
+            f.downloads    = JsonFindInt(j, "downloads");
+            return f;
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        //  CARD LIST
+        // ═══════════════════════════════════════════════════════════════════════
+
+        void RebuildCards()
         {
             foreach (var c in _cards) Destroy(c);
             _cards.Clear();
-            _selectedIdx = -1;
-            OnSelectSong(-1);
+            _borders.Clear();
+            _selIdx = -1;
 
-            if (_results.Count == 0) return;
+            float cardH = 54f;  // YARG row height
+            var ctR = (RectTransform)_listContent;
+            ctR.sizeDelta        = V2(0, _songs.Count * cardH);
+            ctR.anchoredPosition = V2(0, 0);
 
-            float cardH = 62f;
-            // Resize content height
-            var contentRect = _listContainer.GetComponent<RectTransform>();
-            contentRect.sizeDelta = new Vector2(0, _results.Count * cardH);
-
-            for (int i = 0; i < _results.Count; i++)
+            for (int i = 0; i < _songs.Count; i++)
             {
                 int idx = i;
-                var f = _results[i];
-                var card = MakeImage(_listContainer, $"Card_{i}", C_CARD);
-                var r = card.GetComponent<RectTransform>();
-                r.anchorMin = new Vector2(0, 1); r.anchorMax = new Vector2(1, 1);
-                r.pivot = new Vector2(0, 1);
-                r.anchoredPosition = new Vector2(2, -i * cardH);
-                r.sizeDelta = new Vector2(-4, cardH - 2);
+                var f = _songs[i];
 
-                // Title
-                var t = MakeText(card.transform, f.file_title ?? "—", C_TEXT, 14,
-                                 TextAnchor.UpperLeft, new Vector2(8, -6), new Vector2(-8, -6),
-                                 anchor: new Vector2(0, 1), anchorMax: new Vector2(1, 1));
-                t.GetComponent<RectTransform>().sizeDelta = new Vector2(-16, 22);
+                var card = NewImg(_listContent, $"C{i}", C_CARD);  // transparent bg
+                var cr = Rt(card);
+                cr.anchorMin = V2(0,1); cr.anchorMax = V2(1,1);
+                cr.pivot     = V2(0,1);
+                cr.anchoredPosition = V2(0, -(i * cardH));
+                cr.sizeDelta        = V2(0, cardH);
 
-                // Artist + format
-                string sub = $"{f.file_artist ?? ""}  •  {(f.gameformat ?? "").ToUpper()}";
-                var a = MakeText(card.transform, sub, C_SUBTEXT, 12,
-                                 TextAnchor.UpperLeft, new Vector2(8, -30), new Vector2(-8, -30),
-                                 anchor: new Vector2(0, 1), anchorMax: new Vector2(1, 1));
-                a.GetComponent<RectTransform>().sizeDelta = new Vector2(-16, 18);
+                // Title — white, left 65% of row
+                var t = NewTxt(card.transform, f.file_title ?? "—", C_TEXT, 16, TextAnchor.MiddleLeft);
+                Rt(t).anchorMin = V2(0,0); Rt(t).anchorMax = V2(0.65f,1); Rt(t).pivot = V2(0,0.5f);
+                Rt(t).anchoredPosition = V2(16,0); Rt(t).sizeDelta = V2(-8, 0);
+                t.horizontalOverflow = HorizontalWrapMode.Overflow;
 
-                // Difficulty chips
-                string chips = BuildChips(f);
-                if (!string.IsNullOrEmpty(chips))
+                // Artist — gray italic, right 35% of row
+                var a = NewTxt(card.transform, f.file_artist ?? "", C_SUB, 14, TextAnchor.MiddleLeft);
+                a.fontStyle = FontStyle.Italic;
+                Rt(a).anchorMin = V2(0.65f,0); Rt(a).anchorMax = V2(1,1); Rt(a).pivot = V2(0,0.5f);
+                Rt(a).anchoredPosition = V2(0,0); Rt(a).sizeDelta = V2(-12, 0);
+                a.horizontalOverflow = HorizontalWrapMode.Overflow;
+
+                // Format badge — top-right corner, small blue label
+                string fmt = (f.gameformat ?? "").ToUpper();
+                if (!string.IsNullOrEmpty(fmt))
                 {
-                    var d = MakeText(card.transform, chips, new Color(0.45f, 0.75f, 0.55f, 1f), 11,
-                                     TextAnchor.UpperLeft, new Vector2(8, -48), new Vector2(-8, -48),
-                                     anchor: new Vector2(0, 1), anchorMax: new Vector2(1, 1));
-                    d.GetComponent<RectTransform>().sizeDelta = new Vector2(-16, 14);
+                    var fb = NewTxt(card.transform, fmt, C_ACCENT, 10, TextAnchor.UpperRight);
+                    Rt(fb).anchorMin = V2(1,1); Rt(fb).anchorMax = V2(1,1); Rt(fb).pivot = V2(1,1);
+                    Rt(fb).anchoredPosition = V2(-8,-4); Rt(fb).sizeDelta = V2(50,14);
                 }
 
-                // Click handler via invisible button
+                // Thin bottom separator
+                var sep = NewImg(card.transform, "Sep", C_SEP);
+                Rt(sep).anchorMin = V2(0,0); Rt(sep).anchorMax = V2(1,0);
+                Rt(sep).pivot = V2(0.5f,0); Rt(sep).anchoredPosition = V2(0,0); Rt(sep).sizeDelta = V2(0,1);
+
                 var btn = card.gameObject.AddComponent<Button>();
                 btn.targetGraphic = card;
                 var nav = btn.navigation; nav.mode = Navigation.Mode.None; btn.navigation = nav;
-                ColorBlock cb = btn.colors;
-                cb.normalColor = C_CARD; cb.highlightedColor = C_CARD_SEL;
-                cb.pressedColor = C_ACCENT; cb.selectedColor = C_CARD_SEL;
+                var cb  = btn.colors;
+                cb.normalColor      = C_CARD;
+                cb.highlightedColor = C_CARD_HOV;
+                cb.pressedColor     = C_CARD_SEL;
+                cb.selectedColor    = C_CARD_SEL;
+                cb.colorMultiplier  = 1f;
                 btn.colors = cb;
-                btn.onClick.AddListener(() => OnSelectSong(idx));
+                btn.onClick.AddListener(() => OnSelect(idx));
 
                 _cards.Add(card.gameObject);
             }
+
+            if (_detailTitle)  _detailTitle.text  = _songs.Count > 0 ? "Selecione uma\nmúsica na lista" : "Nenhum resultado";
+            if (_detailArtist) _detailArtist.text = "";
+            if (_detailMeta)   _detailMeta.text   = "";
+            if (_dlBtn)        _dlBtn.gameObject.SetActive(false);
+            if (_dlStatusTxt)  _dlStatusTxt.text  = "";
+
+            ctR.anchoredPosition = V2(0, 0);
+            if (_scrollRect != null) _scrollRect.StopMovement();
         }
 
-        void UpdateCards()
+        // ═══════════════════════════════════════════════════════════════════════
+        //  DOWNLOAD
+        // ═══════════════════════════════════════════════════════════════════════
+
+        IEnumerator Download(RvFile f)
         {
-            for (int i = 0; i < _cards.Count; i++)
-            {
-                var img = _cards[i].GetComponent<Image>();
-                if (img != null) img.color = i == _selectedIdx ? C_CARD_SEL : C_CARD;
-            }
-        }
+            _dlBusy = true;
+            _dlBtn.gameObject.SetActive(false);
+            SetDl($"Iniciando: {f.file_title}...");
+            SetBar(0f);
 
-        // ─── Download ─────────────────────────────────────────────────────────
+            string destDir = Path.Combine(SongsDir(),
+                SanitizeName($"{f.file_artist ?? "unknown"} - {f.file_title ?? f.file_id}"));
+            Directory.CreateDirectory(destDir);
 
-        IEnumerator DownloadSong(RvFile f)
-        {
-            _downloading = true;
-            _dlButton.gameObject.SetActive(false);
-            _dlProgress = 0f;
-            _downloadedTitle = f.file_title ?? "música";
-            SetDlStatus($"Baixando: {_downloadedTitle}...");
-            UpdateProgressBar(0f);
-
-            // Figure out destination folder
-            string songsDir = GetSongsDir();
-            string safeTitle = SanitizeFileName($"{f.file_artist ?? "unknown"} - {f.file_title ?? f.file_id}");
-            string destFolder = Path.Combine(songsDir, safeTitle);
-            Directory.CreateDirectory(destFolder);
-
-            string url = f.download_url;
+            string url = !string.IsNullOrEmpty(f.file_url_full) ? f.file_url_full : f.download_page_url_full;
             if (!url.StartsWith("http")) url = "https://rhythmverse.co" + url;
-
-            string tmpFile = Path.Combine(Path.GetTempPath(), $"fgb_{f.file_id}.tmp");
 
             using (var req = UnityWebRequest.Get(url))
             {
                 req.SetRequestHeader("Referer", "https://rhythmverse.co");
-                req.downloadHandler = new DownloadHandlerFile(tmpFile);
                 var op = req.SendWebRequest();
-
                 while (!op.isDone)
                 {
-                    _dlProgress = req.downloadProgress;
-                    UpdateProgressBar(_dlProgress * 0.9f);
-                    SetDlStatus($"Baixando: {(int)(_dlProgress * 100)}%");
+                    SetBar(req.downloadProgress * 0.85f);
+                    SetDl($"Baixando {(int)(req.downloadProgress * 100)}%...");
                     yield return null;
                 }
 
                 if (req.result != UnityWebRequest.Result.Success)
                 {
-                    SetDlStatus($"Erro: {req.error}");
-                    _downloading = false;
-                    _dlButton.gameObject.SetActive(true);
+                    SetDl($"Erro: {req.error}");
+                    _dlBusy = false;
+                    _dlBtn.gameObject.SetActive(true);
                     yield break;
                 }
-            }
 
-            SetDlStatus("Extraindo...");
-            UpdateProgressBar(0.92f);
-            yield return null;
+                SetDl("Extraindo..."); SetBar(0.9f);
+                yield return null;
 
-            bool extracted = false;
-            string error = "";
-            try
-            {
-                ExtractArchive(tmpFile, destFolder);
-                extracted = true;
-            }
-            catch (Exception ex)
-            {
-                error = ex.Message;
-                Debug.LogError($"[FGB] Extract error: {ex}");
-            }
-
-            try { File.Delete(tmpFile); } catch { }
-
-            UpdateProgressBar(1f);
-            if (extracted)
-                SetDlStatus($"✓ '{_downloadedTitle}' instalada em songs/");
-            else
-                SetDlStatus($"Erro ao extrair: {error}");
-
-            _downloading = false;
-            _dlButton.gameObject.SetActive(true);
-        }
-
-        void ExtractArchive(string src, string dest)
-        {
-            // Try .zip first (most common on Rhythmverse)
-            if (IsZip(src))
-            {
-                System.IO.Compression.ZipFile.ExtractToDirectory(src, dest);
-                return;
-            }
-            // For .7z / .rar: shell out to system tools if available
-            string ext = Path.GetExtension(src).ToLower();
-            throw new Exception($"Formato {ext} não suportado automaticamente. Arquivo salvo em: {dest}");
-        }
-
-        static bool IsZip(string path)
-        {
-            try
-            {
-                using (var fs = File.OpenRead(path))
+                string tmp = Path.Combine(Path.GetTempPath(), $"fgb_{f.file_id}.zip");
+                bool ok = false; string err = "";
+                try
                 {
-                    var buf = new byte[4]; fs.Read(buf, 0, 4);
-                    return buf[0] == 0x50 && buf[1] == 0x4B; // PK
+                    File.WriteAllBytes(tmp, req.downloadHandler.data);
+                    if (IsZip(tmp))
+                    {
+                        System.IO.Compression.ZipFile.ExtractToDirectory(tmp, destDir);
+                        ok = true;
+                    }
+                    else err = "Formato não suportado (somente ZIP automático)";
                 }
+                catch (Exception ex) { err = ex.Message; Debug.LogError($"[FGB] Extract: {ex}"); }
+                finally { try { File.Delete(tmp); } catch { } }
+
+                SetBar(1f);
+                SetDl(ok ? $"✓ '{f.file_title}' instalada em songs/" : $"Erro: {err}");
             }
-            catch { return false; }
+
+            _dlBusy = false;
+            _dlBtn.gameObject.SetActive(true);
         }
 
-        // ─── Helpers ──────────────────────────────────────────────────────────
+        // ═══════════════════════════════════════════════════════════════════════
+        //  UTILITY
+        // ═══════════════════════════════════════════════════════════════════════
 
-        static string GetSongsDir()
+        static string SongsDir()
         {
-            // Try YARG's default songs path first
             string yarg = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 "Library", "Application Support", "YARG", "songs");
             if (Directory.Exists(yarg)) return yarg;
 
-            // Fallback: next to the app
-            string app = Application.dataPath;
-            string parent = Path.GetDirectoryName(Path.GetDirectoryName(app)); // up from .app/Contents
-            string local = Path.Combine(parent, "songs");
+            // Fallback: songs/ next to the .app
+            string local = Path.Combine(
+                Path.GetDirectoryName(Path.GetDirectoryName(Application.dataPath)), "songs");
             Directory.CreateDirectory(local);
             return local;
         }
 
-        static string SanitizeFileName(string s)
+        static string SanitizeName(string s)
         {
             foreach (char c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '_');
             return s.Length > 80 ? s.Substring(0, 80) : s;
@@ -630,79 +784,71 @@ namespace FrossGarageBand
             var sb = new StringBuilder();
             if (!string.IsNullOrEmpty(f.file_album)) sb.AppendLine($"Álbum: {f.file_album}");
             sb.AppendLine($"Formato: {(f.gameformat ?? "—").ToUpper()}");
-            void Diff(string lbl, string val) { if (!string.IsNullOrEmpty(val) && val != "0") sb.AppendLine($"{lbl}: {val}"); }
-            Diff("Guitarra", f.diff_guitar); Diff("Baixo", f.diff_bass);
-            Diff("Bateria", f.diff_drums);  Diff("Vocal", f.diff_vocals);
-            Diff("Teclas",  f.diff_keys);
+            void D(string l, int v) { if (v > 0) sb.AppendLine($"  {l}: {v}"); }
+            D("Guitarra", f.diff_guitar); D("Baixo", f.diff_bass);
+            D("Bateria",  f.diff_drums);  D("Vocal", f.diff_vocals);
+            D("Teclas",   f.diff_keys);
             if (f.downloads > 0) sb.AppendLine($"Downloads: {f.downloads:N0}");
-            if (!string.IsNullOrEmpty(f.completeness)) sb.AppendLine($"Completeza: {f.completeness}");
             return sb.ToString().TrimEnd();
         }
 
-        static string BuildChips(RvFile f)
+        static string Chips(RvFile f)
         {
-            var parts = new List<string>();
-            void Add(string icon, string val) { if (!string.IsNullOrEmpty(val) && val != "0") parts.Add($"{icon}{val}"); }
-            Add("🎸", f.diff_guitar); Add("🎸b", f.diff_bass);
-            Add("🥁", f.diff_drums);  Add("🎤", f.diff_vocals); Add("🎹", f.diff_keys);
-            return string.Join("  ", parts);
+            var p = new List<string>();
+            void A(string l, int v) { if (v > 0) p.Add($"{l}{v}"); }
+            A("G:", f.diff_guitar); A("B:", f.diff_bass);
+            A("D:", f.diff_drums);  A("V:", f.diff_vocals); A("K:", f.diff_keys);
+            return string.Join("  ", p);
         }
 
-        void SetLoading(bool on)
+        static bool IsZip(string path)
         {
-            if (_loadingOverlay) _loadingOverlay.SetActive(on);
+            try
+            {
+                using (var fs = File.OpenRead(path))
+                { var b = new byte[4]; fs.Read(b,0,4); return b[0]==0x50 && b[1]==0x4B; }
+            }
+            catch { return false; }
         }
 
-        void SetDlStatus(string s)
+        void SetLoading(bool on) { if (_loadingCover) _loadingCover.SetActive(on); }
+        void SetDl(string s)    { if (_dlStatusTxt)  _dlStatusTxt.text = s; }
+
+        void SetBar(float t)
         {
-            _dlStatus = s;
-            if (_dlStatusText) _dlStatusText.text = s;
+            if (_dlBar == null) return;
+            // Drive fill by changing anchorMax.x from 0→1
+            var r = Rt(_dlBar);
+            r.anchorMax = V2(Mathf.Clamp01(t), 1f);
+            r.offsetMax  = V2(0, 0); // keep offsets zeroed
         }
 
-        void UpdateProgressBar(float t)
-        {
-            _dlProgress = t;
-            if (_dlProgressBar == null) return;
-            var r = _dlProgressBar.GetComponent<RectTransform>();
-            var parent = _dlProgressBar.transform.parent.GetComponent<RectTransform>();
-            r.sizeDelta = new Vector2(parent.rect.width * Mathf.Clamp01(t), 0);
-        }
+        // ═══════════════════════════════════════════════════════════════════════
+        //  UI FACTORY
+        // ═══════════════════════════════════════════════════════════════════════
 
-        // ─── UI factory helpers ───────────────────────────────────────────────
-
-        static Image MakeImage(Transform parent, string name, Color color)
+        static Image NewImg(Transform parent, string name, Color color)
         {
             var go = new GameObject(name);
             go.transform.SetParent(parent, false);
             var img = go.AddComponent<Image>();
             img.color = color;
-            go.AddComponent<RectTransform>();
             return img;
         }
 
-        static Text MakeText(Transform parent, string content, Color color, int size,
-                              TextAnchor align, Vector2 offsetMin, Vector2 offsetMax,
-                              Vector2? anchor = null, Vector2? anchorMax = null)
+        static Text NewTxt(Transform parent, string text, Color color, int size, TextAnchor align)
         {
-            var go = new GameObject("Text");
+            var go = new GameObject("Txt");
             go.transform.SetParent(parent, false);
-            var txt = go.AddComponent<Text>();
-            txt.text = content; txt.color = color;
-            txt.fontSize = size; txt.alignment = align;
-            txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            txt.resizeTextForBestFit = false;
-            txt.horizontalOverflow = HorizontalWrapMode.Wrap;
-            txt.verticalOverflow = VerticalWrapMode.Overflow;
-            var r = txt.GetComponent<RectTransform>();
-            if (anchor.HasValue) { r.anchorMin = anchor.Value; r.anchorMax = anchorMax ?? anchor.Value; }
-            r.anchoredPosition = offsetMin;
-            return txt;
+            var t = go.AddComponent<Text>();
+            t.text = text; t.color = color; t.fontSize = size; t.alignment = align;
+            t.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            t.horizontalOverflow = HorizontalWrapMode.Wrap;
+            t.verticalOverflow   = VerticalWrapMode.Overflow;
+            return t;
         }
 
-        static Button MakeButton(Transform parent, string label, Color bgColor, Color textColor,
-                                  int fontSize, Vector2 anchoredPos, Vector2 sizeDelta,
-                                  TextAnchor textAlign,
-                                  Vector2? pivot = null, Vector2? anchorMin = null, Vector2? anchorMax = null)
+        static Button NewBtn(Transform parent, string label, Color bgColor, Color fgColor, int size)
         {
             var go = new GameObject(label);
             go.transform.SetParent(parent, false);
@@ -711,126 +857,103 @@ namespace FrossGarageBand
             var btn = go.AddComponent<Button>();
             btn.targetGraphic = img;
             var nav = btn.navigation; nav.mode = Navigation.Mode.None; btn.navigation = nav;
-            ColorBlock cb = btn.colors;
-            cb.normalColor = bgColor; cb.highlightedColor = bgColor * 1.2f;
-            cb.pressedColor = bgColor * 0.8f; btn.colors = cb;
+            var cb = btn.colors;
+            cb.normalColor      = bgColor;
+            cb.highlightedColor = Brighten(bgColor, 1.25f);
+            cb.pressedColor     = Brighten(bgColor, 0.75f);
+            cb.selectedColor    = bgColor;
+            cb.colorMultiplier  = 1f;
+            btn.colors = cb;
 
-            var r = go.GetComponent<RectTransform>();
-            if (pivot.HasValue) r.pivot = pivot.Value;
-            if (anchorMin.HasValue) { r.anchorMin = anchorMin.Value; r.anchorMax = anchorMax ?? anchorMin.Value; }
-            r.anchoredPosition = anchoredPos;
-            r.sizeDelta = sizeDelta;
-
-            var txtGo = new GameObject("Label"); txtGo.transform.SetParent(go.transform, false);
-            var txt = txtGo.AddComponent<Text>();
-            txt.text = label; txt.color = textColor; txt.fontSize = fontSize;
-            txt.alignment = textAlign; txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            var tr = txt.GetComponent<RectTransform>();
-            tr.anchorMin = Vector2.zero; tr.anchorMax = Vector2.one;
-            tr.offsetMin = Vector2.zero; tr.offsetMax = Vector2.zero;
-
+            var lblGo = new GameObject("Lbl"); lblGo.transform.SetParent(go.transform, false);
+            var txt = lblGo.AddComponent<Text>();
+            txt.text = label; txt.color = fgColor; txt.fontSize = size;
+            txt.alignment = TextAnchor.MiddleCenter;
+            txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            var tr = Rt(txt);
+            tr.anchorMin = V2(0,0); tr.anchorMax = V2(1,1);
+            tr.offsetMin = V2(4,0); tr.offsetMax = V2(-4,0);
             return btn;
         }
 
-        static InputField MakeInputField(Transform parent, string placeholder,
-                                          Vector2 oMin, Vector2 oMax,
-                                          Vector2 anchorMin, Vector2 anchorMax)
+        static InputField NewInput(Transform parent, string placeholder)
         {
-            var go = new GameObject("InputField");
-            go.transform.SetParent(parent, false);
-            var img = go.AddComponent<Image>();
-            img.color = new Color(0.18f, 0.18f, 0.24f, 1f);
-            var r = go.GetComponent<RectTransform>();
-            r.anchorMin = anchorMin; r.anchorMax = anchorMax;
-            r.offsetMin = oMin; r.offsetMax = oMax;
+            var go = new GameObject("Input"); go.transform.SetParent(parent, false);
+            var img = go.AddComponent<Image>(); img.color = Hex(0x2D2D42);
 
-            // Text child
-            var txtGo = new GameObject("Text"); txtGo.transform.SetParent(go.transform, false);
-            var txt = txtGo.AddComponent<Text>();
-            txt.color = new Color(0.9f, 0.9f, 0.95f, 1f);
-            txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            var tGo = new GameObject("Text"); tGo.transform.SetParent(go.transform, false);
+            var txt = tGo.AddComponent<Text>();
+            txt.color = C_TEXT; txt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
             txt.fontSize = 16; txt.alignment = TextAnchor.MiddleLeft;
-            var tr = txt.GetComponent<RectTransform>();
-            tr.anchorMin = Vector2.zero; tr.anchorMax = Vector2.one;
-            tr.offsetMin = new Vector2(8, 2); tr.offsetMax = new Vector2(-8, -2);
+            var tr = Rt(txt); tr.anchorMin=V2(0,0); tr.anchorMax=V2(1,1);
+            tr.offsetMin=V2(10,2); tr.offsetMax=V2(-10,-2);
 
-            // Placeholder child
-            var phGo = new GameObject("Placeholder"); phGo.transform.SetParent(go.transform, false);
-            var ph = phGo.AddComponent<Text>();
-            ph.text = placeholder;
-            ph.color = new Color(0.5f, 0.5f, 0.6f, 0.8f);
+            var pGo = new GameObject("PH"); pGo.transform.SetParent(go.transform, false);
+            var ph = pGo.AddComponent<Text>();
+            ph.text = placeholder; ph.color = new Color(.5f,.5f,.65f,.8f);
             ph.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            ph.fontSize = 16; ph.alignment = TextAnchor.MiddleLeft;
-            ph.fontStyle = FontStyle.Italic;
-            var pr = ph.GetComponent<RectTransform>();
-            pr.anchorMin = Vector2.zero; pr.anchorMax = Vector2.one;
-            pr.offsetMin = new Vector2(8, 2); pr.offsetMax = new Vector2(-8, -2);
+            ph.fontSize = 16; ph.alignment = TextAnchor.MiddleLeft; ph.fontStyle = FontStyle.Italic;
+            var pr = Rt(ph); pr.anchorMin=V2(0,0); pr.anchorMax=V2(1,1);
+            pr.offsetMin=V2(10,2); pr.offsetMax=V2(-10,-2);
 
             var field = go.AddComponent<InputField>();
-            field.targetGraphic = img;
-            field.textComponent = txt;
-            field.placeholder = ph;
-            field.caretColor = new Color(0.3f, 0.8f, 0.45f, 1f);
-
+            field.targetGraphic = img; field.textComponent = txt; field.placeholder = ph;
+            field.caretColor = C_ACCENT;
             return field;
         }
 
-        static ScrollRect MakeScrollRect(Transform parent, out Transform content)
+        // ── RectTransform helpers ─────────────────────────────────────────────
+
+        static RectTransform Rt(Component c) => (RectTransform)c.transform;
+
+        static void Stretch(RectTransform r)
         {
-            var go = new GameObject("Scroll");
-            go.transform.SetParent(parent, false);
-            FillParent(go.GetComponent<RectTransform>() ?? go.AddComponent<RectTransform>());
-
-            var mask = go.AddComponent<Image>(); mask.color = new Color(0, 0, 0, 0.01f);
-            go.AddComponent<Mask>().showMaskGraphic = false;
-
-            var sr = go.AddComponent<ScrollRect>();
-            sr.horizontal = false;
-
-            // Viewport
-            var vp = new GameObject("Viewport"); vp.transform.SetParent(go.transform, false);
-            var vpRect = vp.AddComponent<RectTransform>();
-            vpRect.anchorMin = Vector2.zero; vpRect.anchorMax = Vector2.one;
-            vpRect.sizeDelta = Vector2.zero; vpRect.pivot = new Vector2(0, 1);
-            vp.AddComponent<Image>().color = new Color(0, 0, 0, 0);
-            vp.AddComponent<Mask>().showMaskGraphic = false;
-
-            // Content
-            var ct = new GameObject("Content"); ct.transform.SetParent(vp.transform, false);
-            var ctRect = ct.AddComponent<RectTransform>();
-            ctRect.anchorMin = new Vector2(0, 1); ctRect.anchorMax = Vector2.one;
-            ctRect.pivot = new Vector2(0, 1);
-            ctRect.sizeDelta = new Vector2(0, 600);
-            ctRect.anchoredPosition = Vector2.zero;
-
-            sr.viewport = vpRect;
-            sr.content = ctRect;
-            sr.scrollSensitivity = 30;
-
-            content = ct.transform;
-            return sr;
+            r.anchorMin = V2(0,0); r.anchorMax = V2(1,1);
+            r.offsetMin = V2(0,0); r.offsetMax = V2(0,0);
         }
 
-        // ─── RectTransform utilities ──────────────────────────────────────────
-
-        static void FillParent(RectTransform r)
+        // Full-width band anchored to TOP of parent
+        // topOffset = distance from parent's top to this element's top edge (px, positive = down)
+        static Transform Band(Transform parent, string name, Color color, float topOffset, float height)
         {
-            r.anchorMin = Vector2.zero; r.anchorMax = Vector2.one;
-            r.offsetMin = Vector2.zero; r.offsetMax = Vector2.zero;
+            var go = new GameObject(name); go.transform.SetParent(parent, false);
+            var img = go.AddComponent<Image>(); img.color = color;
+            var r = Rt(img);
+            r.anchorMin = V2(0, 1); r.anchorMax = V2(1, 1);
+            r.pivot = V2(0.5f, 1);
+            r.anchoredPosition = V2(0, -topOffset);
+            r.sizeDelta = V2(0, height);
+            return go.transform;
         }
 
-        static void SetRect(Transform t, float axMin, float axMax, float ayMin, float ayMax,
-                             float offLeft, float offTop, float offRight, float offBot)
+        // Full-width band anchored to BOTTOM of parent
+        static Transform BandBottom(Transform parent, string name, Color color, float bottomOffset, float height)
         {
-            var r = t as RectTransform ?? t.GetComponent<RectTransform>();
-            r.anchorMin = new Vector2(axMin, ayMin);
-            r.anchorMax = new Vector2(axMax, ayMax);
-            r.offsetMin = new Vector2(offLeft, offBot);
-            r.offsetMax = new Vector2(offRight, offTop);
+            var go = new GameObject(name); go.transform.SetParent(parent, false);
+            var img = go.AddComponent<Image>(); img.color = color;
+            var r = Rt(img);
+            r.anchorMin = V2(0, 0); r.anchorMax = V2(1, 0);
+            r.pivot = V2(0.5f, 0);
+            r.anchoredPosition = V2(0, bottomOffset);
+            r.sizeDelta = V2(0, height);
+            return go.transform;
         }
 
-        static void SetRect(RectTransform r, float axMin, float axMax, float ayMin, float ayMax,
-                             float offLeft, float offTop, float offRight, float offBot)
-            => SetRect((Transform)r, axMin, axMax, ayMin, ayMax, offLeft, offTop, offRight, offBot);
+        // Pin element to top of parent, full width with 14px side padding
+        static void PinTop(Component c, float topOffset, float height)
+        {
+            var r = Rt(c);
+            r.anchorMin = V2(0, 1); r.anchorMax = V2(1, 1);
+            r.pivot = V2(0.5f, 1);
+            r.anchoredPosition = V2(0, -topOffset);
+            r.sizeDelta = V2(-28, height);
+        }
+
+        static Vector2 V2(float x, float y) => new Vector2(x, y);
+        static Color   Brighten(Color c, float f) => new Color(c.r*f, c.g*f, c.b*f, c.a);
+        static Color   Hex(uint rgb) => new Color(
+            ((rgb >> 16) & 0xFF) / 255f,
+            ((rgb >>  8) & 0xFF) / 255f,
+            ( rgb        & 0xFF) / 255f, 1f);
     }
 }

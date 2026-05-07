@@ -1,16 +1,13 @@
 #!/bin/bash
 # ────────────────────────────────────────────────────────────
-#  Fross Garage Band — Launch YARG with BepInEx
-#  Double-click to start YARG with the Download Music plugin
+#  Fross Garage Band — Launch YARG
+#  Double-click to start the game
 # ────────────────────────────────────────────────────────────
 YARG="/Applications/YARG.app"
-RUN_SCRIPT="$YARG/run_bepinex.sh"
 
-if [ ! -f "$RUN_SCRIPT" ]; then
-    osascript -e 'display alert "run_bepinex.sh not found" message "Make sure BepInEx is installed in YARG.app"'
+if [ ! -d "$YARG" ]; then
+    osascript -e 'display alert "YARG não encontrado" message "Certifique-se que YARG está instalado em /Applications/YARG.app"'
     exit 1
 fi
 
-cd "$YARG"
-chmod +x "$RUN_SCRIPT"
-exec "$RUN_SCRIPT"
+open "$YARG"

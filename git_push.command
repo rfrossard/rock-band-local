@@ -18,43 +18,28 @@ echo "✓ Arquivos adicionados"
 if git diff --cached --quiet; then
     echo "  (nada novo para commitar — tudo já está no histórico)"
 else
-    git commit -m "feat: v2.0.0 — FrossDownloadMenu Unity C# in-game Rhythmverse search
+    git commit -m "feat: v2.2.0 — YARG Music Library visual redesign + download fix
 
-YARG IS NOW THE PRIMARY GAME:
-- Python Rock Band Local archived to backup/python_rb_local/
-- YARG (Fross Garage Band) is the sole game
-- All new features built in Unity C#
+FIX: Download travado (Application.OpenURL)
+- Download coroutine substituído por Application.OpenURL
+- Rhythmverse exige cookies de browser para download direto
+- Agora abre o link no navegador do sistema automaticamente
 
-NEW: FrossDownloadMenu.cs (~550 lines)
-- Full Unity C# MonoBehaviour — no Unity Editor required
-- Programmatic Canvas overlay (sortingOrder=200) on top of YARG UI
-- Search bar + format filter buttons (All/CH/YARG/RB3/PS/WTDE)
-- Scrollable song list with difficulty chips per instrument
-- Detail panel: title, artist, album, diffs, download count
-- Download button with real-time progress bar
-- UnityWebRequest coroutines → Rhythmverse POST API
-- ZIP extraction → ~/Library/Application Support/YARG/songs/
-- Back button — overlay destroyed, YARG resumes normally
+FIX: Cards invisíveis no scroll (RectMask2D)
+- Causa raiz: Image+Mask com alpha=0 não escreve no stencil buffer
+- Fix: Viewport usa RectMask2D (clip por RectTransform, sem stencil)
+- anchoredPosition resetado diretamente em RebuildCards
 
-NEW: patch_fgb.command
-- Compiles FrossDownloadMenu.cs → FrossDownloadMenu.dll (net472)
-- References YARG's own UnityEngine / UI DLLs at compile time
-- Copies DLL to YARG Managed/ folder
-- Mono.Cecil inline patcher: MainMenu.Credits() → FrossDownloadMenu.Show()
-- Re-signs Assembly-CSharp.dll with codesign
-- Backup before patch → restore_yarg.command still works
-
-NEW: IMPLEMENTATION_PLAN.md
-- Session continuity document: what's done, what's next
-- Phase-by-phase status (Phases 1-5)
-- API reference, architecture diagram, session notes
-- Token budget strategy for future Claude sessions
-
-UPDATED: README.md → v2.0.0
-- Unity-first architecture description
-- Quick start with patch_fgb.command
-- Scripts reference table
-- Changelog"
+REDESIGN: FrossDownloadMenu.cs — visual YARG Music Library
+- Paleta: bg=#07101C, panel=#0D1B2B, seleção=#1478FF, texto branco
+- TopBar: 64px, título MUSIC LIBRARY + caption DOWNLOAD (estilo YARG)
+- Layout: 65% lista / 35% detalhe com separador vertical
+- Linhas de 54px (era 70px): título branco esq + artista cinza itálico dir
+- Badge de formato no canto superior direito de cada linha
+- Separador fino C_SEP entre linhas (6% branco)
+- Seleção: fundo azul full-width (sem border strip lateral)
+- Botão BAIXAR no topo do painel de detalhe (estilo PLAY SONG do YARG)
+- Botões de formato: pills transparentes com highlight no selecionado"
 
     echo "✓ Commit criado"
 fi

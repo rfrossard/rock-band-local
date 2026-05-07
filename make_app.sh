@@ -79,40 +79,47 @@ mkdir -p "$RES_DIR"
 cat > "$LAUNCHER" << LAUNCHER_EOF
 #!/usr/bin/env bash
 # Fross Song Manager launcher
-# Finds the project directory (folder containing this .app) and runs the app.
 
-# Resolve the path to the .app bundle, then the project dir
+# ── Resolve project path ────────────────────────────────────────────────────
 SELF="\$(cd "\$(dirname "\$0")" && pwd)"
 BUNDLE_DIR="\$(dirname "\$(dirname "\$SELF")")"
 PROJECT_DIR="\$(dirname "\$BUNDLE_DIR")"
 
-# Find python3.11
-if command -v python3.11 &>/dev/null; then
-  PY="\$(command -v python3.11)"
-elif [ -x "/Users/frossard/homebrew/bin/python3.11" ]; then
-  PY="/Users/frossard/homebrew/bin/python3.11"
-elif [ -x "\$HOME/homebrew/bin/python3.11" ]; then
-  PY="\$HOME/homebrew/bin/python3.11"
-else
-  osascript -e 'display alert "Python 3.11 não encontrado" message "Instale via: brew install python@3.11" as critical'
+# ── Clean Python env vars (pyenv/virtualenv inject paths that block TCC) ────
+unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONNOUSERSITE
+unset PYENV_VERSION PYENV_ROOT PYENV_DIR PYENV_HOOK_PATH VIRTUAL_ENV
+
+# ── Find Python.app inside Homebrew framework ──────────────────────────────
+# Direct exec blocks TCC access to Documents folder; open -a grants it.
+FW_PYTHON_APP=""
+for candidate in \
+    "/Users/frossard/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/Resources/Python.app" \
+    "\$HOME/homebrew/Cellar/python@3.11"*/*/Frameworks/Python.framework/Versions/3.11/Resources/Python.app
+do
+  if [ -d "\$candidate" ]; then
+    FW_PYTHON_APP="\$candidate"
+    break
+  fi
+done
+
+if [ -z "\$FW_PYTHON_APP" ]; then
+  # Last resort: search
+  FW_PYTHON_APP="\$(find "\$HOME/homebrew/Cellar/python@3.11" -name "Python.app" -maxdepth 8 2>/dev/null | head -1)"
+fi
+
+if [ -z "\$FW_PYTHON_APP" ]; then
+  osascript -e 'display alert "Python 3.11 não encontrado" message "Instale via:\nbrew install python@3.11\nbrew install python-tk@3.11" as critical'
   exit 1
 fi
 
-# Verify tkinter
-"\$PY" -c "import tkinter" 2>/dev/null || {
-  osascript -e 'display alert "tkinter não encontrado" message "Execute: brew install python-tk@3.11" as critical'
+# ── Verify project dir ──────────────────────────────────────────────────────
+if [ ! -f "\$PROJECT_DIR/song_manager.py" ]; then
+  osascript -e "display alert \"Projeto não encontrado\" message \"Esperado em:\n\$PROJECT_DIR\" as critical"
   exit 1
-}
+fi
 
-# Install deps if missing
-"\$PY" -c "import requests, bs4" 2>/dev/null || {
-  osascript -e 'display notification "Instalando dependências..." with title "Fross Song Manager"'
-  "\$PY" -m pip install --quiet requests beautifulsoup4
-}
-
-# Launch
-cd "\$PROJECT_DIR"
-exec "\$PY" song_manager.py
+# ── Launch via open -a (user-context, bypasses TCC for Documents folder) ────
+exec /usr/bin/open -n -a "\$FW_PYTHON_APP" --args "\$PROJECT_DIR/song_manager.py"
 LAUNCHER_EOF
 
 chmod +x "$LAUNCHER"
